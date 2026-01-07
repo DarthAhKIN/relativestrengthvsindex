@@ -56,7 +56,6 @@ prices_dict = {}
 with st.spinner('데이터를 수집 및 정제 중입니다...'):
     for name, sym in symbols.items():
         try:
-            # 원자재 및 지수 데이터를 넉넉히 가져옴
             df = yf.download(sym, period='2y', auto_adjust=True, progress=False)
             if not df.empty:
                 df = df.reset_index()
@@ -93,7 +92,7 @@ if prices_dict:
     start_date, end_date = user_date[0], user_date[1]
     
     if not selected_symbols:
-        st.warning("항목을 선택해주세요.")
+        st.warning("상단 선택창에서 분석할 종목을 선택해 주세요.")
     else:
         # 데이터 필터링
         filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
@@ -172,28 +171,34 @@ if prices_dict:
         with col_right:
             st.subheader("📊 성과 요약")
             summary_data = []
-            # 선택된 기간의 영업일 수 계산
             num_days = len(daily_rets.dropna(how='all'))
             
             for col in filtered_prices.columns:
-                # 일평균 변동성
+                # 변동성 지표 계산
                 d_vol = daily_rets[col].std() * 100
-                # 선택기간 변동률 (일일 변동성 * sqrt(기간))
                 period_vol = daily_rets[col].std() * np.sqrt(num_days) * 100
+                
+                curr_ret = norm_df[col].iloc[-1]
+                max_ret = norm_df[col].max()
                 
                 summary_data.append({
                     '항목': col,
-                    '현재수익률 (%)': norm_df[col].iloc[-1],
-                    '최고수익률 (%)': norm_df[col].max(),
+                    '현재수익률 (%)': curr_ret,
+                    '최고수익률 (%)': max_ret,
                     '일평균 변동성 (%)': d_vol,
                     '선택기간 변동률 (%)': period_vol
                 })
             
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
-            # 표 출력 (포맷팅 적용)
+            # 조건부 서식: 현재수익률이 최고수익률과 같으면 빨간색 강조
+            def highlight_max(row):
+                # 부동소수점 오차 방지를 위해 차이가 매우 작으면 동일한 것으로 간주
+                is_max = abs(row['현재수익률 (%)'] - row['최고수익률 (%)']) < 1e-9
+                return ['color: red; font-weight: bold' if is_max and val == row['현재수익률 (%)'] else '' for val in row]
+
             st.dataframe(
-                sum_df.style.format({
+                sum_df.style.apply(highlight_max, axis=1).format({
                     '현재수익률 (%)': '{:.2f}',
                     '최고수익률 (%)': '{:.2f}',
                     '일평균 변동성 (%)': '{:.2f}',
@@ -203,11 +208,9 @@ if prices_dict:
                 use_container_width=True
             )
             
-            # CSV 다운로드
             csv = sum_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📊 분석 결과 CSV 저장", csv, "analysis_report.csv", "text/csv")
-            
-            st.info(f"💡 **기간 변동률 안내**: 선택하신 {num_days} 영업일 동안의 누적된 실제 변동 강도를 의미합니다.")
+            st.download_button("📊 분석 결과 CSV 저장", csv, "market_summary.csv", "text/csv")
+            st.info(f"💡 **참고**: 현재수익률이 선택 기간 중 고점일 경우 **빨간색**으로 표시됩니다.")
 
 else:
-    st.error("데이터를 수집하지 못했습니다. 티커명이나 네트워크 연결을 확인해주세요.")
+    st.error("데이터 수집에 실패했습니다. 사이드바 설정을 확인해 주세요.")
