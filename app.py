@@ -6,7 +6,7 @@ import FinanceDataReader as fdr
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 
 # 0. 페이지 기본 설정
 st.set_page_config(page_title="주식 & 원자재 통합 분석기", layout="wide")
@@ -27,7 +27,9 @@ def get_ticker(name, krx_df):
 
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
-load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 150)
+
+# [변경 포인트 1] 데이터 로드 범위를 숫자로 직접 입력
+load_days_input = st.sidebar.number_input("데이터 로드 범위 (영업일 기준)", min_value=30, max_value=1000, value=250, step=10)
 
 default_symbols = {
     'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
@@ -47,42 +49,47 @@ if added_stocks:
 
 # --- 2. 데이터 로드 및 정제 ---
 prices_dict = {}
-with st.spinner('데이터를 수집 및 정제 중입니다...'):
+with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
         try:
-            # 기간을 충분히 넉넉하게 가져와서 필터링
-            df = yf.download(sym, period='2y', auto_adjust=True, progress=False)
+            # 입력받은 로드 범위보다 약간 넉넉하게 가져옴 (이동평균/MDD 계산용)
+            df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
+                # 최근 입력한 영업일 수만큼만 자르기
+                df = df.tail(load_days_input)
                 temp_df = pd.DataFrame(index=df.index)
                 for col in ['Close', 'High', 'Low']:
                     if col in df.columns:
                         col_data = df[col]
                         temp_df[col] = col_data.iloc[:, 0] if isinstance(col_data, pd.DataFrame) else col_data
                 
-                # 핵심 수정: 인덱스를 확실하게 datetime.date 객체로 통일
                 temp_df.index = pd.to_datetime(temp_df.index).date
                 prices_dict[name] = temp_df
         except: continue
 
 if prices_dict:
-    st.title("📈 주식 & 원자재 통합 분석 리포트")
-    selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
-    
-    # 가용 날짜 범위 계산
+    # --- 3. 기간 선택 슬라이더 (로드된 데이터 범위 내에서 작동) ---
     all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
     min_d, max_d = all_dates[0], all_dates[-1]
-    
-    # 사이드바 기간 선택 슬라이더
-    user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, 
-                                  value=(max_d - timedelta(days=load_days), max_d))
+
+    st.sidebar.subheader("📅 분석 기간 선택")
+    # 로드된 데이터 안에서 마우스로 조절하는 슬라이더
+    user_date = st.sidebar.slider(
+        "분석 범위",
+        min_value=min_d,
+        max_value=max_d,
+        value=(min_d, max_d),
+        format="YYYY-MM-DD"
+    )
     start_date, end_date = user_date[0], user_date[1]
 
+    st.title("📈 주식 & 원자재 통합 분석 리포트")
+    selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
+
     if selected_symbols:
-        # 에러 방지용 필터링 방식 변경: .loc 대신 불리언 인덱싱 사용
         def filter_by_date(df, start, end):
             return df[(df.index >= start) & (df.index <= end)]
 
-        # 상관관계용 종가 데이터프레임 합치기
         close_list = []
         for s in selected_symbols:
             filtered = filter_by_date(prices_dict[s], start_date, end_date)
@@ -92,7 +99,7 @@ if prices_dict:
         if close_list:
             close_df = pd.concat(close_list, axis=1).interpolate(method='linear', limit_direction='both')
             
-            # --- 3. 메인 통합 그래프 ---
+            # --- 4. 통합 그래프 생성 ---
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, 
                                 subplot_titles=("🚀 누적 수익률 (%) 및 당일 변동폭", "📉 최고가 대비 하락률 (Drawdown %)"), row_heights=[0.6, 0.4])
             colors = px.colors.qualitative.Alphabet 
@@ -106,7 +113,7 @@ if prices_dict:
                 base_p = df_sym['Close'].iloc[0]
                 norm_c, norm_h, norm_l = (df_sym['Close']/base_p-1)*100, (df_sym['High']/base_p-1)*100, (df_sym['Low']/base_p-1)*100
                 
-                # 상단 변동폭 그림자
+                # 변동폭 그림자
                 fig.add_trace(go.Scatter(x=list(norm_h.index)+list(norm_l.index)[::-1], y=list(norm_h.values)+list(norm_l.values)[::-1], 
                                          fill='toself', fillcolor=color, line=dict(color='rgba(0,0,0,0)'), opacity=0.15, 
                                          name=col, legendgroup=col, showlegend=False, hoverinfo='skip'), row=1, col=1)
@@ -114,7 +121,7 @@ if prices_dict:
                 fig.add_trace(go.Scatter(x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
                                          line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'), row=1, col=1)
                 
-                # 하단 Drawdown
+                # 하락률(Drawdown)
                 dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
                 all_min_dd.append(float(dd.min()))
                 fig.add_trace(go.Scatter(x=dd.index, y=dd, name=col, legendgroup=col, showlegend=False, mode='lines', 
@@ -126,7 +133,7 @@ if prices_dict:
             fig.update_yaxes(ticksuffix="%", range=[min(all_min_dd)*1.1 if all_min_dd else -10, 2], row=2, col=1)
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 4. 하단 분석 리포트 ---
+            # --- 5. 하단 분석 리포트 ---
             st.divider()
             col_l, col_r = st.columns([1, 1])
 
@@ -174,6 +181,6 @@ if prices_dict:
                 csv = sum_df.to_csv(index=False).encode('utf-8-sig')
                 st.download_button(label="📥 성과 요약 CSV 다운로드", data=csv, file_name=f"performance_{start_date}_{end_date}.csv", mime="text/csv")
         else:
-            st.warning("선택한 기간에 해당하는 데이터가 없습니다.")
+            st.warning("해당 기간에 데이터가 없습니다.")
 else:
     st.error("데이터 로드 실패")
