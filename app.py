@@ -5,7 +5,6 @@ import plotly.express as px
 import FinanceDataReader as fdr
 import numpy as np
 
-# 페이지 설정
 st.set_page_config(page_title="주식 수익률 비교 분석기", layout="wide")
 
 @st.cache_data
@@ -24,7 +23,6 @@ def get_ticker(name, krx_df):
         return f"{code}.KS" if market == 'KOSPI' else f"{code}.KQ"
     return name
 
-# 사이드바 설정
 st.sidebar.header("🔍 설정")
 base_days = st.sidebar.slider("분석 기간 (영업일)", 10, 252, 60)
 
@@ -43,60 +41,59 @@ if added_stocks:
         if name:
             symbols[name] = get_ticker(name, krx_df)
 
-# 데이터 로드
 all_data = []
-for name, sym in symbols.items():
-    try:
-        # auto_adjust=True로 데이터 구조 단순화
-        df = yf.download(sym, period='1y', auto_adjust=True, progress=False)
-        if not df.empty:
-            df = df.tail(base_days + 1)
-            # [수정포인트] 인덱스(Date)를 컬럼으로 빼내기
-            df = df.reset_index()
-            
-            # 종가(Close) 컬럼 추출 (MultiIndex 대응)
-            if 'Close' in df.columns:
-                close_data = df['Close']
-            else:
-                close_data = df.iloc[:, 1] # 첫 번째 데이터 컬럼 사용
+# 데이터 수집 진행 상황 표시
+with st.spinner('야후 파이낸스에서 데이터를 불러오고 있습니다...'):
+    for name, sym in symbols.items():
+        try:
+            # 기간을 여유있게 가져옴
+            df = yf.download(sym, period='1y', auto_adjust=True, progress=False)
+            if not df.empty:
+                df = df.tail(base_days + 5)
+                df = df.reset_index()
+                
+                # [핵심 수정] 어떤 형태의 데이터프레임에서도 'Close' 열을 안전하게 추출
+                if 'Close' in df.columns:
+                    # Multi-index인 경우 첫 번째 Close 컬럼 선택
+                    close_val = df['Close'].iloc[:, 0] if isinstance(df['Close'], pd.DataFrame) else df['Close']
+                else:
+                    # 컬럼명에 'Close'가 포함된 열 찾기
+                    close_cols = [c for c in df.columns if 'Close' in str(c)]
+                    close_val = df[close_cols[0]] if close_cols else df.iloc[:, 1]
 
-            tmp = pd.DataFrame({
-                'Date': pd.to_datetime(df['Date']),
-                'Close': close_data.astype(float),
-                'Symbol': name
-            })
-            all_data.append(tmp)
-    except Exception as e:
-        continue
+                tmp = pd.DataFrame({
+                    'Date': pd.to_datetime(df['Date']),
+                    'Close': close_val.astype(float),
+                    'Symbol': name
+                }).dropna()
+                all_data.append(tmp)
+        except Exception as e:
+            st.error(f"{name} 데이터를 가져오지 못했습니다: {e}")
 
 if all_data:
     df_main = pd.concat(all_data).reset_index(drop=True)
-    
     st.title("📈 주식 수익률 비교 분석기")
-    st.info("💡 하단 슬라이더를 조절하면 시작점이 0%로 자동 재계산됩니다.")
 
-    # 날짜 범위 선택
+    # 사이드바 날짜 선택기
     min_date = df_main['Date'].min().to_pydatetime()
     max_date = df_main['Date'].max().to_pydatetime()
-    selected_range = st.sidebar.date_input("분석 날짜 범위", value=(min_date, max_date))
+    
+    st.sidebar.subheader("📅 범위 재계산")
+    selected_range = st.sidebar.date_input("분석 날짜 선택", value=(min_date, max_date))
 
-    if len(selected_range) == 2:
+    if isinstance(selected_range, tuple) and len(selected_range) == 2:
         start_date, end_date = pd.to_datetime(selected_range[0]), pd.to_datetime(selected_range[1])
-        
-        # 필터링
-        mask = (df_main['Date'] >= start_date) & (df_main['Date'] <= end_date)
-        filtered_df = df_main.loc[mask].copy()
+        filtered_df = df_main[(df_main['Date'] >= start_date) & (df_main['Date'] <= end_date)].copy()
         
         if not filtered_df.empty:
             norm_list, summary_list = [], []
             for sym in filtered_df['Symbol'].unique():
-                target = filtered_df[filtered_df['Symbol'] == sym].sort_values('Date')
+                target = filtered_df[filtered_df['Symbol'] == sym].sort_values('Date').copy()
                 if len(target) > 0:
                     first_val = target['Close'].iloc[0]
                     target['수익률 (%)'] = ((target['Close'] / first_val) - 1) * 100
                     norm_list.append(target)
                     
-                    # 지표 계산
                     daily_ret = target['Close'].pct_change()
                     summary_list.append({
                         '종목': sym,
@@ -105,19 +102,17 @@ if all_data:
                         '일평균변동폭 (%)': daily_ret.abs().mean() * 100
                     })
 
-            final_df = pd.concat(norm_list)
-            
-            # 그래프
-            fig_norm = px.line(final_df, x='Date', y='수익률 (%)', color='Symbol', markers=True,
+            if norm_list:
+                final_df = pd.concat(norm_list)
+                fig = px.line(final_df, x='Date', y='수익률 (%)', color='Symbol', markers=True,
                                title=f"재계산된 수익률 (기준일: {start_date.strftime('%Y-%m-%d')})")
-            fig_norm.add_hline(y=0, line_dash="dash", line_color="black")
-            fig_norm.update_layout(hovermode='x unified', template='plotly_white',
-                                  legend=dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02))
-            st.plotly_chart(fig_norm, use_container_width=True)
+                fig.add_hline(y=0, line_dash="dash", line_color="black")
+                fig.update_layout(hovermode='x unified', template='plotly_white', height=600,
+                                  legend=dict(x=1.02, y=1))
+                st.plotly_chart(fig, use_container_width=True)
 
-            # 요약 표
-            st.subheader("📊 투자 성과 요약")
-            sum_df = pd.DataFrame(summary_list).sort_values('수익률 (%)', ascending=False)
-            st.table(sum_df.style.format({'수익률 (%)': '{:.2f}', '기간변동성 (%)': '{:.2f}', '일평균변동폭 (%)': '{:.2f}'}))
+                st.subheader("📊 투자 성과 요약")
+                sum_df = pd.DataFrame(summary_list).sort_values('수익률 (%)', ascending=False)
+                st.table(sum_df.style.format({'수익률 (%)': '{:.2f}', '기간변동성 (%)': '{:.2f}', '일평균변동폭 (%)': '{:.2f}'}))
 else:
-    st.warning("데이터를 불러오는 중입니다. 잠시만 기다려주세요.")
+    st.error("데이터 수집에 실패했습니다. 사이드바에서 종목을 다시 확인하거나 잠시 후 시도해주세요.")
