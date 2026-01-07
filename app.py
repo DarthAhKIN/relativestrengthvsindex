@@ -1,31 +1,58 @@
-with col_right:
-            st.subheader("📊 성과 요약")
-            summary_data = []
-            for col in filtered_prices.columns:
-                # 일일 수익률의 표준편차 (일일 변동성)
-                daily_vol = daily_rets[col].std() * 100 
-                # 연율화 변동성 (영업일 252일 기준)
-                annual_vol = daily_rets[col].std() * np.sqrt(252) * 100
-                
-                summary_data.append({
-                    '항목': col,
-                    '현재수익률 (%)': norm_df[col].iloc[-1],
-                    '최고수익률 (%)': norm_df[col].max(),
-                    '일평균 변동성 (%)': daily_vol,
-                    '연간 환산 변동성 (%)': annual_vol
-                })
-            
-            # 데이터프레임 생성 및 소수점 2자리 포맷팅
-            sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
-            st.dataframe(
-                sum_df.style.format({
-                    '현재수익률 (%)': '{:.2f}',
-                    '최고수익률 (%)': '{:.2f}',
-                    '일평균 변동성 (%)': '{:.2f}',
-                    '연간 환산 변동성 (%)': '{:.2f}'
-                }), 
-                hide_index=True, 
-                use_container_width=True
-            )
-            
-            st.info("💡 **변동성 안내**: 일평균 변동성이 높을수록 하루 주가 움직임이 크다는 것을 의미합니다.")
+import streamlit as st
+import yfinance as yf
+import pandas as pd
+import plotly.express as px
+import FinanceDataReader as fdr
+import numpy as np
+import plotly.graph_objects as go
+
+# 페이지 설정
+st.set_page_config(page_title="주식 & 원자재 통합 분석기", layout="wide")
+
+@st.cache_data
+def get_krx_list():
+    try: return fdr.StockListing('KRX')
+    except: return pd.DataFrame()
+
+def get_ticker(name, krx_df):
+    if krx_df.empty: return name
+    row = krx_df[krx_df['Name'] == name]
+    if not row.empty:
+        code = row.iloc[0]['Code']
+        market = row.iloc[0]['Market']
+        return f"{code}.KS" if market == 'KOSPI' else f"{code}.KQ"
+    return name
+
+# --- 1. 사이드바 설정 ---
+st.sidebar.header("🔍 기본 설정")
+load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 150)
+
+# 기본 인덱스 설정 (지수 6종 + 원자재 5종)
+default_symbols = {
+    'S&P 500': '^GSPC', 
+    'Nasdaq 100': '^NDX', 
+    'Dow Jones': '^DJI', 
+    'Russell 2000': '^RUT',
+    'KOSPI': '^KS11',
+    'KOSDAQ': '^KQ11',
+    '금 (Gold)': 'GC=F',
+    '은 (Silver)': 'SI=F',
+    '구리 (Copper)': 'HG=F',
+    'WTI 원유': 'CL=F',
+    '철광석 (Iron Ore)': 'TIO=F'
+}
+
+krx_df = get_krx_list()
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "", placeholder="예: 삼성전자, TSLA, NVDA")
+
+symbols = default_symbols.copy()
+if added_stocks:
+    for s in added_stocks.split(','):
+        name = s.strip()
+        if name: symbols[name] = get_ticker(name, krx_df)
+
+# --- 2. 데이터 로드 및 정제 ---
+prices_dict = {}
+with st.spinner('데이터를 수집 및 정제 중입니다...'):
+    for name, sym in symbols.items():
+        try:
