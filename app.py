@@ -69,31 +69,32 @@ if prices_dict:
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
         daily_rets = filtered_prices.pct_change()
         
-        summary = []
+        summary_data = []
         for col in filtered_prices.columns:
             rets = daily_rets[col].dropna()
-            summary.append({
+            summary_data.append({
                 '종목': col,
                 '수익률 (%)': norm_df[col].iloc[-1],
                 '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100,
                 '일평균변동폭 (%)': rets.abs().mean() * 100
             })
+        sum_df = pd.DataFrame(summary_data).sort_values('수익률 (%)', ascending=False)
 
         # --- 화면 레이아웃 구성 ---
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        # [상단 배치] 수익률 그래프 (가로 전체 사용)
+        # [상단] 수익률 그래프
         st.subheader("수익률 추이 (0% 기준 재계산)")
         plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
         fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
         fig.add_hline(y=0, line_dash="dash", line_color="black")
-        fig.update_layout(hovermode='x unified', template='plotly_white', height=600) # 높이 충분히 확보
+        fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
         st.plotly_chart(fig, use_container_width=True)
 
-        st.divider() # 시각적 구분선
+        st.divider()
 
-        # [하단 배치] 상관관계와 요약표를 2열로 배치
+        # [하단] 2열 배치
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -102,12 +103,20 @@ if prices_dict:
             fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
             fig_corr.update_layout(height=450)
             st.plotly_chart(fig_corr, use_container_width=True)
+            
+            # 다운로드 버튼 추가
+            csv = sum_df.to_csv(index=False).encode('utf-8-sig') # 한글 깨짐 방지 utf-8-sig
+            st.download_button(
+                label="📊 분석 결과 CSV로 저장",
+                data=csv,
+                file_name=f'stock_analysis_{start_date.strftime("%Y%m%d")}.csv',
+                mime='text/csv',
+            )
 
         with col_right:
-            st.subheader("성과 요약")
-            sum_df = pd.DataFrame(summary).sort_values('수익률 (%)', ascending=False)
-            st.table(sum_df.style.format(precision=2))
-            st.info("※ 기간변동성: 선택 기간 전체의 누적 변동 표준편차\n\n※ 일평균변동폭: 하루 평균 주가 움직임의 절대값")
+            st.subheader(f"📊 {actual_business_days}영업일 성과 요약")
+            st.dataframe(sum_df.style.format(precision=2), hide_index=True, use_container_width=True)
+            st.info("※ **기간변동성**: 선택한 전체 기간의 누적 위험도\n\n※ **일평균변동폭**: 하루 평균 주가 움직임의 크기")
 
 else:
     st.error("데이터를 수집하지 못했습니다.")
