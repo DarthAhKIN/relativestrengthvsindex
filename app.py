@@ -5,7 +5,7 @@ import plotly.express as px
 import FinanceDataReader as fdr
 import numpy as np
 
-st.set_page_config(page_title="주식 수익률 분석기", layout="wide")
+st.set_page_config(page_title="주식 수익률 & 상관계수 분석기", layout="wide")
 
 @st.cache_data
 def get_krx_list():
@@ -23,7 +23,6 @@ def get_ticker(name, krx_df):
 
 # 1. 사이드바 설정
 st.sidebar.header("🔍 설정")
-# 기본 로드 기간은 처음 데이터를 가져오는 양을 결정합니다.
 load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 120)
 
 symbols = {'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 'Russell 2000': '^RUT'}
@@ -49,7 +48,7 @@ with st.spinner('데이터를 분석 중입니다...'):
                     'Price': df[close_col].iloc[:,0] if isinstance(df[close_col], pd.DataFrame) else df[close_col],
                     'Symbol': name
                 }).dropna()
-                all_data.append(tmp.tail(load_days)) # 설정한 로드 범위만큼 가져옴
+                all_data.append(tmp.tail(load_days))
         except: continue
 
 if all_data:
@@ -68,19 +67,23 @@ if all_data:
     if not filtered.empty:
         norm_data = []
         summary = []
+        corr_dict = {} # 상관관계 계산용
         
-        # 선택된 범위의 실제 영업일수 계산 (종목 중 하나를 기준으로 함)
         sample_sym = filtered['Symbol'].unique()[0]
         actual_business_days = len(filtered[filtered['Symbol'] == sample_sym])
 
         for sym in filtered['Symbol'].unique():
             target = filtered[filtered['Symbol'] == sym].sort_values('Date').copy()
             if not target.empty:
+                # 수익률 재계산
                 base_price = target['Price'].iloc[0]
                 target['수익률 (%)'] = ((target['Price'] / base_price) - 1) * 100
                 norm_data.append(target)
                 
+                # 지표 및 상관계수용 일일 수익률 계산
                 rets = target['Price'].pct_change()
+                corr_dict[sym] = rets
+                
                 summary.append({
                     '종목': sym,
                     '수익률 (%)': target['수익률 (%)'].iloc[-1],
@@ -89,17 +92,27 @@ if all_data:
                 })
 
         # 5. 화면 출력
-        st.title("📈 기간별 수익률 재계산 분석기")
+        st.title("📈 주식 수익률 & 상관계수 분석")
+        st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        # [핵심 추가] 현재 분석 중인 영업일수와 기간을 상단에 표시
-        st.success(f"✅ **현재 분석 기간:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
-        
-        final_df = pd.concat(norm_data)
-        fig = px.line(final_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
-        fig.add_hline(y=0, line_dash="dash", line_color="black")
-        fig.update_layout(hovermode='x unified', template='plotly_white', height=550,
-                          xaxis=dict(title="날짜"), yaxis=dict(title="수익률 (%)"))
-        st.plotly_chart(fig, use_container_width=True)
+        # 레이아웃 분할 (그래프와 상관계수 히트맵)
+        col1, col2 = st.columns([3, 2])
 
+        with col1:
+            st.subheader("수익률 추이")
+            final_df = pd.concat(norm_data)
+            fig = px.line(final_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
+            fig.add_hline(y=0, line_dash="dash", line_color="black")
+            fig.update_layout(hovermode='x unified', template='plotly_white', height=500)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("종목 간 상관관계")
+            corr_df = pd.DataFrame(corr_dict).corr()
+            fig_corr = px.imshow(corr_df, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
+            fig_corr.update_layout(height=500)
+            st.plotly_chart(fig_corr, use_container_width=True)
+
+        # 요약표
         st.subheader(f"📊 {actual_business_days}영업일간의 성과 요약")
         st.table(pd.DataFrame(summary).sort_values('수익률 (%)', ascending=False).style.format(precision=2))
