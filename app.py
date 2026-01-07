@@ -68,11 +68,10 @@ if prices_dict:
     # --- 3. 메인 화면 상단 구성 ---
     st.title("📈 주식 & 원자재 수익률 및 하락률 분석")
     
-    st.markdown("### 👁️ 분석 대상 선택")
     selected_symbols = st.multiselect(
         "그래프에 표시할 항목을 선택하세요",
         options=list(df_merged.columns),
-        default=list(df_merged.columns)
+        default=list(df_merged.columns)[:5] # 너무 많으면 복잡하므로 기본 5개
     )
     
     st.sidebar.subheader("📅 분석 범위 (0% 리셋)")
@@ -84,90 +83,85 @@ if prices_dict:
     if not selected_symbols:
         st.warning("항목을 선택해 주세요.")
     else:
-        # 데이터 필터링
         filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
         daily_rets = filtered_prices.pct_change()
         
         st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {len(filtered_prices)} 영업일**)")
         
+        # 공통 컬러맵 생성 (두 차트의 색상을 일치시키기 위함)
+        colors = px.colors.qualitative.Alphabet 
+        color_map = {col: colors[i % len(colors)] for i, col in enumerate(selected_symbols)}
+
         # --- 4. 메인 그래프 (수익률 추이) ---
         st.subheader("🚀 누적 수익률 (%)")
         fig_main = go.Figure()
-        colors = px.colors.qualitative.Alphabet 
 
-        for i, col in enumerate(filtered_prices.columns):
-            color = colors[i % len(colors)]
+        for col in selected_symbols:
             fig_main.add_trace(go.Scatter(
                 x=norm_df.index, y=norm_df[col],
                 name=col, legendgroup=col,
-                mode='lines', line=dict(width=2, color=color),
+                mode='lines', line=dict(width=2, color=color_map[col]),
                 connectgaps=True, hovertemplate='%{x}<br>수익률: %{y:.2f}%'
             ))
             
-            # 최고점 👑 표시
             max_val = norm_df[col].max()
             max_date = norm_df[col].idxmax()
             fig_main.add_trace(go.Scatter(
                 x=[max_date], y=[max_val],
                 name=col, legendgroup=col, mode='markers',
-                marker=dict(size=10, symbol='star', color=color),
+                marker=dict(size=10, symbol='star', color=color_map[col]),
                 showlegend=False, hoverinfo='skip'
             ))
 
         fig_main.add_hline(y=0, line_dash="dash", line_color="black")
-        fig_main.update_layout(hovermode='x unified', template='plotly_white', height=500, margin=dict(t=10))
+        
+        # X축 설정 동기화의 핵심
+        fig_main.update_layout(
+            hovermode='x unified', template='plotly_white', height=450, 
+            margin=dict(t=10, b=10),
+            xaxis=dict(showticklabels=True, range=[start_date, end_date]) # 날짜 범위 고정
+        )
         st.plotly_chart(fig_main, use_container_width=True)
 
-        # --- 5. 드로우다운(Drawdown) 그래프 (범위 수정 버전) ---
+        # --- 5. 드로우다운(Drawdown) 그래프 ---
         st.subheader("📉 최고가 대비 하락률 (Drawdown %)")
         fig_dd = go.Figure()
 
-        # 모든 종목의 하락폭 중 최솟값을 추적하기 위한 리스트
         all_min_dd = []
-
-        for i, col in enumerate(filtered_prices.columns):
-            color = colors[i % len(colors)]
-            # Drawdown 계산
+        for col in selected_symbols:
             rolling_high = filtered_prices[col].cummax()
             drawdown = ((filtered_prices[col] / rolling_high) - 1) * 100
-            all_min_dd.append(drawdown.min()) # 각 종목의 최대 하락폭 저장
+            all_min_dd.append(drawdown.min())
             
-            # 드로우다운 라인
             fig_dd.add_trace(go.Scatter(
                 x=drawdown.index, y=drawdown,
                 name=col, legendgroup=col,
-                mode='lines', line=dict(width=1.5, color=color),
+                mode='lines', line=dict(width=1.5, color=color_map[col]),
                 fill='tozeroy', 
                 connectgaps=True, hovertemplate='%{x}<br>하락률: %{y:.2f}%'
             ))
             
-            # 신고가(0%) 지점 다이아몬드 강조
             is_high = drawdown.abs() < 1e-6
             df_high = drawdown[is_high]
             fig_dd.add_trace(go.Scatter(
                 x=df_high.index, y=df_high,
                 mode='markers', legendgroup=col,
-                marker=dict(size=8, symbol='diamond', color=color, line=dict(width=1, color='white')),
+                marker=dict(size=8, symbol='diamond', color=color_map[col], line=dict(width=1, color='white')),
                 showlegend=False, hoverinfo='skip'
             ))
 
-        # Y축 범위를 데이터에 맞게 동적으로 설정 (최소 하락폭의 1.1배 혹은 최소 -10% 확보)
         min_y_limit = min(all_min_dd) if all_min_dd else -10
-        # 만약 하락폭이 거의 없다면(-1% 이내), 그래프가 너무 평평해지지 않게 최소 범위를 -5%로 설정
         y_range_bottom = min(min_y_limit * 1.1, -5.0)
 
         fig_dd.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+        
+        # 상단 차트와 X축 범위를 완벽히 일치시킴
         fig_dd.update_layout(
-            hovermode='x unified', 
-            template='plotly_white', 
-            height=400,
-            yaxis=dict(
-                title="하락률 (%)", 
-                range=[y_range_bottom, 2], # 고점 0%가 잘 보이고 하단은 유동적으로
-                autorange=False
-            ),
-            margin=dict(t=10)
+            hovermode='x unified', template='plotly_white', height=350,
+            yaxis=dict(title="하락률 (%)", range=[y_range_bottom, 2], autorange=False),
+            xaxis=dict(range=[start_date, end_date]), # 상단 차트와 동일한 날짜 범위 적용
+            margin=dict(t=10, b=10)
         )
         st.plotly_chart(fig_dd, use_container_width=True)
 
@@ -188,7 +182,7 @@ if prices_dict:
             summary_data = []
             num_days = len(daily_rets.dropna(how='all'))
             
-            for col in filtered_prices.columns:
+            for col in selected_symbols:
                 summary_data.append({
                     '항목': col,
                     '현재수익률 (%)': norm_df[col].iloc[-1],
@@ -212,6 +206,5 @@ if prices_dict:
                     '일평균 변동성 (%)': '{:.2f}', '선택기간 변동률 (%)': '{:.2f}'
                 }), hide_index=True, use_container_width=True
             )
-            st.info("💡 **색상 안내**: **빨간색**은 신고가, **파란색**은 고점 대비 5% 이내 근접 항목입니다.")
 else:
-    st.error("데이터 수집에 실패했습니다. 사이드바 설정을 확인해 주세요.")
+    st.error("데이터 수집에 실패했습니다.")
