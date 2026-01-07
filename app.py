@@ -34,7 +34,7 @@ if added_stocks:
         name = s.strip()
         if name: symbols[name] = get_ticker(name, krx_df)
 
-# 2. 데이터 불러오기 및 수익률 통합
+# 2. 데이터 불러오기
 prices_dict = {}
 with st.spinner('데이터를 분석 중입니다...'):
     for name, sym in symbols.items():
@@ -43,7 +43,6 @@ with st.spinner('데이터를 분석 중입니다...'):
             if not df.empty:
                 df = df.reset_index()
                 close_col = 'Close' if 'Close' in df.columns else df.columns[1]
-                # 날짜와 종가만 추출하여 저장
                 temp_df = pd.DataFrame({
                     'Date': pd.to_datetime(df['Date']),
                     name: df[close_col].iloc[:,0] if isinstance(df[close_col], pd.DataFrame) else df[close_col]
@@ -52,7 +51,7 @@ with st.spinner('데이터를 분석 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 모든 데이터를 날짜 기준으로 하나로 합침 (중요: 여기서 날짜가 정렬됨)
+    # 날짜 기준 데이터 통합
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index().tail(load_days)
     
     # 3. 사이드바 날짜 슬라이더
@@ -61,14 +60,12 @@ if prices_dict:
     max_d = df_merged.index.max().to_pydatetime()
     user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
 
-    # 4. 데이터 필터링
+    # 4. 데이터 필터링 및 계산
     start_date, end_date = pd.to_datetime(user_date[0]), pd.to_datetime(user_date[1])
     filtered_prices = df_merged.loc[start_date:end_date].copy()
 
     if not filtered_prices.empty:
         actual_business_days = len(filtered_prices)
-        
-        # 수익률 및 지표 계산
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
         daily_rets = filtered_prices.pct_change()
         
@@ -82,30 +79,35 @@ if prices_dict:
                 '일평균변동폭 (%)': rets.abs().mean() * 100
             })
 
-        # 5. 화면 출력
+        # --- 화면 레이아웃 구성 ---
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        col1, col2 = st.columns([3, 2])
+        # [상단 배치] 수익률 그래프 (가로 전체 사용)
+        st.subheader("수익률 추이 (0% 기준 재계산)")
+        plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
+        fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
+        fig.add_hline(y=0, line_dash="dash", line_color="black")
+        fig.update_layout(hovermode='x unified', template='plotly_white', height=600) # 높이 충분히 확보
+        st.plotly_chart(fig, use_container_width=True)
 
-        with col1:
-            st.subheader("수익률 추이")
-            # 그래프용 데이터 변환
-            plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
-            fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
-            fig.add_hline(y=0, line_dash="dash", line_color="black")
-            fig.update_layout(hovermode='x unified', template='plotly_white', height=500)
-            st.plotly_chart(fig, use_container_width=True)
+        st.divider() # 시각적 구분선
 
-        with col2:
+        # [하단 배치] 상관관계와 요약표를 2열로 배치
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
             st.subheader("종목 간 상관관계")
-            # [수정] 깨끗한 수익률 데이터로 상관계수 계산
             corr_matrix = daily_rets.corr()
             fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
-            fig_corr.update_layout(height=500)
+            fig_corr.update_layout(height=450)
             st.plotly_chart(fig_corr, use_container_width=True)
 
-        st.subheader(f"📊 {actual_business_days}영업일간의 성과 요약")
-        st.table(pd.DataFrame(summary).sort_values('수익률 (%)', ascending=False).style.format(precision=2))
+        with col_right:
+            st.subheader("성과 요약")
+            sum_df = pd.DataFrame(summary).sort_values('수익률 (%)', ascending=False)
+            st.table(sum_df.style.format(precision=2))
+            st.info("※ 기간변동성: 선택 기간 전체의 누적 변동 표준편차\n\n※ 일평균변동폭: 하루 평균 주가 움직임의 절대값")
+
 else:
-    st.error("데이터 수집에 실패했습니다.")
+    st.error("데이터를 수집하지 못했습니다.")
