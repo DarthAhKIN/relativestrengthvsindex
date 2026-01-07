@@ -51,7 +51,6 @@ with st.spinner('데이터를 분석 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 날짜 기준 데이터 통합
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index().tail(load_days)
     
     # 3. 사이드바 날짜 슬라이더
@@ -70,24 +69,53 @@ if prices_dict:
         daily_rets = filtered_prices.pct_change()
         
         summary_data = []
+        high_points = [] # 최고점 저장을 위한 리스트
+
         for col in filtered_prices.columns:
             rets = daily_rets[col].dropna()
+            # 최고 수익률 지점 찾기
+            max_yield = norm_df[col].max()
+            max_date = norm_df[col].idxmax()
+            high_points.append({'Date': max_date, '수익률 (%)': max_yield, 'Symbol': col})
+
             summary_data.append({
                 '종목': col,
-                '수익률 (%)': norm_df[col].iloc[-1],
-                '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100,
-                '일평균변동폭 (%)': rets.abs().mean() * 100
+                '최고수익률 (%)': max_yield,
+                '현재수익률 (%)': norm_df[col].iloc[-1],
+                '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100
             })
-        sum_df = pd.DataFrame(summary_data).sort_values('수익률 (%)', ascending=False)
+        
+        sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
+        high_df = pd.DataFrame(high_points)
 
         # --- 화면 레이아웃 구성 ---
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
         # [상단] 수익률 그래프
-        st.subheader("수익률 추이 (0% 기준 재계산)")
+        st.subheader("수익률 추이 및 종목별 최고점(👑)")
         plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
-        fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
+        
+        fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol')
+        
+        # 최고가(최고수익률) 지점에 강조 점과 라벨 추가
+        for i, row in high_df.iterrows():
+            fig.add_annotation(
+                x=row['Date'], y=row['수익률 (%)'],
+                text=f"👑 {row['Symbol']}",
+                showarrow=True, arrowhead=1, ax=0, ay=-20,
+                font=dict(size=10, color="black"),
+                bgcolor="white", opacity=0.8
+            )
+            # 최고점 포인트 강조
+            fig.add_scatter(
+                x=[row['Date']], y=[row['수익률 (%)']],
+                mode='markers',
+                marker=dict(size=10, symbol='star', line=dict(width=1, color='black')),
+                name=f"{row['Symbol']} 최고점",
+                showlegend=False
+            )
+
         fig.add_hline(y=0, line_dash="dash", line_color="black")
         fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
         st.plotly_chart(fig, use_container_width=True)
@@ -104,8 +132,7 @@ if prices_dict:
             fig_corr.update_layout(height=450)
             st.plotly_chart(fig_corr, use_container_width=True)
             
-            # 다운로드 버튼 추가
-            csv = sum_df.to_csv(index=False).encode('utf-8-sig') # 한글 깨짐 방지 utf-8-sig
+            csv = sum_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📊 분석 결과 CSV로 저장",
                 data=csv,
@@ -114,9 +141,9 @@ if prices_dict:
             )
 
         with col_right:
-            st.subheader(f"📊 {actual_business_days}영업일 성과 요약")
+            st.subheader(f"📊 성과 요약")
             st.dataframe(sum_df.style.format(precision=2), hide_index=True, use_container_width=True)
-            st.info("※ **기간변동성**: 선택한 전체 기간의 누적 위험도\n\n※ **일평균변동폭**: 하루 평균 주가 움직임의 크기")
+            st.info("※ **👑 표시**: 선택한 기간 내 각 종목의 최고 수익률 지점")
 
 else:
     st.error("데이터를 수집하지 못했습니다.")
