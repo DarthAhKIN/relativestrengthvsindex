@@ -22,13 +22,19 @@ def get_ticker(name, krx_df):
         return f"{code}.KS" if market == 'KOSPI' else f"{code}.KQ"
     return name
 
-# 1. 설정 및 데이터 로드
+# 1. 설정 및 데이터 로드 (4대 지수 복구)
 st.sidebar.header("🔍 기본 설정")
 load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 120)
 
-default_symbols = {'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX'}
+# 원래 기본 설정대로 4대 지수 복구
+default_symbols = {
+    'S&P 500': '^GSPC', 
+    'Nasdaq 100': '^NDX', 
+    'Dow Jones': '^DJI', 
+    'Russell 2000': '^RUT'
+}
 krx_df = get_krx_list()
-added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "TSLA, NVDA")
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "TSLA, NVDA, 삼성전자")
 
 symbols = default_symbols.copy()
 if added_stocks:
@@ -43,7 +49,7 @@ with st.spinner('데이터를 정제 중입니다...'):
             df = yf.download(sym, period='2y', auto_adjust=True, progress=False)
             if not df.empty:
                 df = df.reset_index()
-                df['Date'] = pd.to_datetime(df['Date']).dt.date # 시분초 제거
+                df['Date'] = pd.to_datetime(df['Date']).dt.date
                 close_col = 'Close' if 'Close' in df.columns else df.columns[1]
                 temp_df = pd.DataFrame({
                     'Date': df['Date'],
@@ -53,10 +59,10 @@ with st.spinner('데이터를 정제 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 데이터 통합
+    # 데이터 통합 (모든 종목의 날짜 합집합)
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index()
     
-    # [핵심] 휴장일 빈칸을 이전 값으로 채움 (선 끊김 방지)
+    # [핵심] 결측치 처리: 앞뒤 값으로 채워 상관관계 및 그래프 끊김 해결
     df_merged = df_merged.ffill().bfill() 
     df_merged = df_merged.tail(load_days)
     
@@ -94,15 +100,13 @@ if prices_dict:
             color = colors[i % len(colors)]
             y_values = norm_df[col]
             
-            # 메인 라인
             fig.add_trace(go.Scatter(
                 x=norm_df.index, y=y_values,
                 name=col, legendgroup=col,
                 mode='lines', line=dict(width=2.5, color=color),
-                connectgaps=True # 데이터가 비어있어도 강제로 선 연결
+                connectgaps=True
             ))
             
-            # 최고점 마커
             max_yield, max_date = y_values.max(), y_values.idxmax()
             fig.add_trace(go.Scatter(
                 x=[max_date], y=[max_yield],
@@ -115,14 +119,8 @@ if prices_dict:
 
         fig.add_hline(y=0, line_dash="dash", line_color="black")
         
-        # [핵심] X축에서 주말/휴장일 제거 (가로로 끊기는 현상 해결)
-        fig.update_xaxes(
-            rangebreaks=[
-                dict(bounds=["sat", "mon"]), # 주말 제거
-                dict(values=["2025-11-27", "2025-12-25"]) # 추수감사절, 크리스마스 등 특정 휴장일 제거
-            ]
-        )
-        
+        # 휴장일(주말 등) 처리로 가로 끊김 제거
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
         fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -132,8 +130,8 @@ if prices_dict:
         with col_left:
             st.subheader("종목 간 상관관계")
             if len(selected_symbols) > 1:
-                # [수정] 결측치를 제거한 후 상관계수 계산 (히트맵 정상화)
-                corr_matrix = daily_rets.fillna(0).corr() 
+                # 결측치 없이 정제된 데이터로 상관관계 계산
+                corr_matrix = daily_rets.dropna(how='all').corr()
                 fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
                 st.plotly_chart(fig_corr, use_container_width=True)
             else:
