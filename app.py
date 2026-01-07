@@ -5,6 +5,7 @@ import plotly.express as px
 import FinanceDataReader as fdr
 import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # 0. 페이지 기본 설정
 st.set_page_config(page_title="주식 & 원자재 통합 분석기", layout="wide")
@@ -65,16 +66,16 @@ if prices_dict:
     df_merged = df_merged.interpolate(method='linear', limit_direction='both')
     df_merged = df_merged.tail(load_days)
     
-    # --- 3. 메인 화면 상단 구성 ---
-    st.title("📈 주식 & 원자재 수익률 및 하락률 분석")
+    # --- 3. 메인 화면 ---
+    st.title("📈 주식 & 원자재 통합 분석 리포트")
     
     selected_symbols = st.multiselect(
         "그래프에 표시할 항목을 선택하세요",
         options=list(df_merged.columns),
-        default=list(df_merged.columns)[:5] # 너무 많으면 복잡하므로 기본 5개
+        default=list(df_merged.columns)[:5]
     )
     
-    st.sidebar.subheader("📅 분석 범위 (0% 리셋)")
+    st.sidebar.subheader("📅 분석 범위")
     min_d, max_d = df_merged.index.min(), df_merged.index.max()
     user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
     
@@ -87,87 +88,92 @@ if prices_dict:
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
         daily_rets = filtered_prices.pct_change()
         
-        st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {len(filtered_prices)} 영업일**)")
-        
-        # 공통 컬러맵 생성 (두 차트의 색상을 일치시키기 위함)
+        # --- 4. 통합 그래프 생성 (Subplots) ---
+        # 서브플롯 생성: 행 2개, 열 1개 (수익률 60%, 하락률 40% 비율)
+        fig = make_subplots(
+            rows=2, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.1,
+            subplot_titles=("🚀 누적 수익률 (%)", "📉 최고가 대비 하락률 (Drawdown %)"),
+            row_heights=[0.6, 0.4]
+        )
+
         colors = px.colors.qualitative.Alphabet 
-        color_map = {col: colors[i % len(colors)] for i, col in enumerate(selected_symbols)}
+        all_min_dd = []
 
-        # --- 4. 메인 그래프 (수익률 추이) ---
-        st.subheader("🚀 누적 수익률 (%)")
-        fig_main = go.Figure()
-
-        for col in selected_symbols:
-            fig_main.add_trace(go.Scatter(
-                x=norm_df.index, y=norm_df[col],
-                name=col, legendgroup=col,
-                mode='lines', line=dict(width=2, color=color_map[col]),
-                connectgaps=True, hovertemplate='%{x}<br>수익률: %{y:.2f}%'
-            ))
+        for i, col in enumerate(selected_symbols):
+            color = colors[i % len(colors)]
             
+            # 1) 수익률 데이터 (상단)
+            fig.add_trace(go.Scatter(
+                x=norm_df.index, y=norm_df[col],
+                name=col, 
+                legendgroup=col, # 그룹화
+                mode='lines', line=dict(width=2, color=color),
+                hovertemplate='%{x}<br>수익률: %{y:.2f}%'
+            ), row=1, col=1)
+
+            # 수익률 최고점 표시
             max_val = norm_df[col].max()
             max_date = norm_df[col].idxmax()
-            fig_main.add_trace(go.Scatter(
+            fig.add_trace(go.Scatter(
                 x=[max_date], y=[max_val],
-                name=col, legendgroup=col, mode='markers',
-                marker=dict(size=10, symbol='star', color=color_map[col]),
+                legendgroup=col, mode='markers',
+                marker=dict(size=10, symbol='star', color=color),
                 showlegend=False, hoverinfo='skip'
-            ))
+            ), row=1, col=1)
 
-        fig_main.add_hline(y=0, line_dash="dash", line_color="black")
-        
-        # X축 설정 동기화의 핵심
-        fig_main.update_layout(
-            hovermode='x unified', template='plotly_white', height=450, 
-            margin=dict(t=10, b=10),
-            xaxis=dict(showticklabels=True, range=[start_date, end_date]) # 날짜 범위 고정
-        )
-        st.plotly_chart(fig_main, use_container_width=True)
-
-        # --- 5. 드로우다운(Drawdown) 그래프 ---
-        st.subheader("📉 최고가 대비 하락률 (Drawdown %)")
-        fig_dd = go.Figure()
-
-        all_min_dd = []
-        for col in selected_symbols:
+            # 2) Drawdown 데이터 (하단)
             rolling_high = filtered_prices[col].cummax()
             drawdown = ((filtered_prices[col] / rolling_high) - 1) * 100
             all_min_dd.append(drawdown.min())
             
-            fig_dd.add_trace(go.Scatter(
+            fig.add_trace(go.Scatter(
                 x=drawdown.index, y=drawdown,
-                name=col, legendgroup=col,
-                mode='lines', line=dict(width=1.5, color=color_map[col]),
-                fill='tozeroy', 
-                connectgaps=True, hovertemplate='%{x}<br>하락률: %{y:.2f}%'
-            ))
-            
+                name=col, 
+                legendgroup=col, # 상단과 동일한 그룹 설정
+                showlegend=False, # 범례 중복 방지
+                mode='lines', line=dict(width=1.5, color=color),
+                fill='tozeroy',
+                hovertemplate='%{x}<br>하락률: %{y:.2f}%'
+            ), row=2, col=1)
+
+            # 신고가 포인트
             is_high = drawdown.abs() < 1e-6
             df_high = drawdown[is_high]
-            fig_dd.add_trace(go.Scatter(
+            fig.add_trace(go.Scatter(
                 x=df_high.index, y=df_high,
-                mode='markers', legendgroup=col,
-                marker=dict(size=8, symbol='diamond', color=color_map[col], line=dict(width=1, color='white')),
+                legendgroup=col, mode='markers',
+                marker=dict(size=8, symbol='diamond', color=color, line=dict(width=1, color='white')),
                 showlegend=False, hoverinfo='skip'
-            ))
+            ), row=2, col=1)
 
+        # 레이아웃 설정
         min_y_limit = min(all_min_dd) if all_min_dd else -10
         y_range_bottom = min(min_y_limit * 1.1, -5.0)
 
-        fig_dd.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
-        
-        # 상단 차트와 X축 범위를 완벽히 일치시킴
-        fig_dd.update_layout(
-            hovermode='x unified', template='plotly_white', height=350,
-            yaxis=dict(title="하락률 (%)", range=[y_range_bottom, 2], autorange=False),
-            xaxis=dict(range=[start_date, end_date]), # 상단 차트와 동일한 날짜 범위 적용
-            margin=dict(t=10, b=10)
+        fig.update_layout(
+            hovermode='x unified', 
+            template='plotly_white', 
+            height=800,
+            margin=dict(t=50, b=50),
+            legend=dict(traceorder="normal")
         )
-        st.plotly_chart(fig_dd, use_container_width=True)
+
+        # 축 설정 동기화
+        fig.update_xaxes(range=[start_date, end_date], showgrid=True, gridcolor='LightGrey')
+        fig.update_yaxes(title_text="수익률 (%)", row=1, col=1)
+        fig.update_yaxes(title_text="하락률 (%)", range=[y_range_bottom, 2], autorange=False, row=2, col=1)
+        
+        # 0선 추가
+        fig.add_hline(y=0, line_dash="dash", line_color="black", row=1, col=1)
+        fig.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5, row=2, col=1)
+
+        st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
 
-        # --- 6. 하단 분석 리포트 ---
+        # --- 5. 하단 분석 리포트 ---
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -181,7 +187,6 @@ if prices_dict:
             st.subheader("📊 성과 요약")
             summary_data = []
             num_days = len(daily_rets.dropna(how='all'))
-            
             for col in selected_symbols:
                 summary_data.append({
                     '항목': col,
