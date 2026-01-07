@@ -26,10 +26,12 @@ def get_ticker(name, krx_df):
 st.sidebar.header("🔍 설정")
 load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 120)
 
-symbols = {'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 'Russell 2000': '^RUT'}
+# 기본 종목 세팅
+default_symbols = {'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 'Russell 2000': '^RUT'}
 krx_df = get_krx_list()
 added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "삼성전자, TSLA")
 
+symbols = default_symbols.copy()
 if added_stocks:
     for s in added_stocks.split(','):
         name = s.strip()
@@ -52,7 +54,16 @@ with st.spinner('데이터를 분석 중입니다...'):
         except: continue
 
 if prices_dict:
+    # 날짜 기준 데이터 통합
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index().tail(load_days)
+    
+    # [핵심 추가] 사이드바 종목 필터링 (슬라이더 조절 시에도 유지됨)
+    st.sidebar.subheader("👁️ 표시 종목 선택")
+    selected_symbols = st.sidebar.multiselect(
+        "그래프에 표시할 종목을 선택하세요",
+        options=list(df_merged.columns),
+        default=list(df_merged.columns)
+    )
     
     # 3. 사이드바 날짜 슬라이더
     st.sidebar.subheader("📅 분석 범위 설정 (0% 리셋)")
@@ -60,9 +71,9 @@ if prices_dict:
     max_d = df_merged.index.max().to_pydatetime()
     user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
 
-    # 4. 데이터 필터링 및 계산
+    # 4. 데이터 필터링 (날짜 + 선택된 종목)
     start_date, end_date = pd.to_datetime(user_date[0]), pd.to_datetime(user_date[1])
-    filtered_prices = df_merged.loc[start_date:end_date].copy()
+    filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
 
     if not filtered_prices.empty:
         actual_business_days = len(filtered_prices)
@@ -77,30 +88,26 @@ if prices_dict:
             color = colors[i % len(colors)]
             y_values = norm_df[col]
             
-            # 1. 메인 라인 그래프 추가 (그룹명 지정)
+            # 1. 메인 라인
             fig.add_trace(go.Scatter(
                 x=norm_df.index, y=y_values,
-                name=col, 
-                legendgroup=col, # 종목명을 그룹ID로 사용
+                name=col, legendgroup=col,
                 mode='lines',
                 line=dict(width=2, color=color),
                 hovertemplate='%{x}<br>%{y:.2f}%'
             ))
             
-            # 최고점 계산
+            # 2. 최고점 마커
             max_yield = y_values.max()
             max_date = y_values.idxmax()
-            
-            # 2. 최고점 마커 추가 (동일한 legendgroup 지정)
             fig.add_trace(go.Scatter(
                 x=[max_date], y=[max_yield],
-                name=col, 
-                legendgroup=col, # 위 라인과 동일한 그룹ID
+                name=col, legendgroup=col,
                 mode='markers+text',
                 text=[f"👑 {col}"],
                 textposition="top center",
                 marker=dict(size=12, symbol='star', color=color, line=dict(width=1, color='black')),
-                showlegend=False, # 범례 목록에는 중복 표시 안 함
+                showlegend=False,
                 hoverinfo='skip'
             ))
 
@@ -117,18 +124,8 @@ if prices_dict:
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        # 가로선 추가
         fig.add_hline(y=0, line_dash="dash", line_color="black")
-        
-        # 레이아웃 설정 (범례 연동 핵심 설정 추가)
-        fig.update_layout(
-            hovermode='x unified', template='plotly_white', height=600,
-            xaxis=dict(title="날짜"), yaxis=dict(title="수익률 (%)"),
-            legend=dict(
-                itemclick="toggle",      # 클릭 시 토글
-                itemdoubleclick="toggleothers" # 더블클릭 시 나머지 숨김
-            )
-        )
+        fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
@@ -136,10 +133,13 @@ if prices_dict:
 
         with col_left:
             st.subheader("종목 간 상관관계")
-            corr_matrix = daily_rets.corr()
-            fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
-            fig_corr.update_layout(height=450)
-            st.plotly_chart(fig_corr, use_container_width=True)
+            if len(selected_symbols) > 1:
+                corr_matrix = daily_rets.corr()
+                fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
+                fig_corr.update_layout(height=450)
+                st.plotly_chart(fig_corr, use_container_width=True)
+            else:
+                st.info("상관관계를 보려면 2개 이상의 종목을 선택하세요.")
             
             csv = sum_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(label="📊 분석 결과 CSV 저장", data=csv, file_name=f'stock_analysis.csv', mime='text/csv')
