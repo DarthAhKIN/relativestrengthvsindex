@@ -28,8 +28,17 @@ def get_ticker(name, krx_df):
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
 
-# [변경 포인트 1] 데이터 로드 범위를 숫자로 직접 입력
-load_days_input = st.sidebar.number_input("데이터 로드 범위 (영업일 기준)", min_value=30, max_value=1000, value=250, step=10)
+# [핵심 수정] 세션 상태를 이용한 값 관리
+if 'load_days' not in st.session_state:
+    st.session_state.load_days = 250
+
+load_days_input = st.sidebar.number_input(
+    "데이터 로드 범위 (최대 영업일)", 
+    min_value=30, max_value=1000, 
+    value=st.session_state.load_days, 
+    step=10,
+    key="load_days_input"
+)
 
 default_symbols = {
     'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
@@ -47,16 +56,14 @@ if added_stocks:
         name = s.strip()
         if name: symbols[name] = get_ticker(name, krx_df)
 
-# --- 2. 데이터 로드 및 정제 ---
+# --- 2. 데이터 로드 ---
 prices_dict = {}
 with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
         try:
-            # 입력받은 로드 범위보다 약간 넉넉하게 가져옴 (이동평균/MDD 계산용)
             df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
-                # 최근 입력한 영업일 수만큼만 자르기
-                df = df.tail(load_days_input)
+                df = df.tail(load_days_input) # 입력된 로드 범위만큼 자르기
                 temp_df = pd.DataFrame(index=df.index)
                 for col in ['Close', 'High', 'Low']:
                     if col in df.columns:
@@ -68,20 +75,25 @@ with st.spinner('데이터를 수집 중입니다...'):
         except: continue
 
 if prices_dict:
-    # --- 3. 기간 선택 슬라이더 (로드된 데이터 범위 내에서 작동) ---
+    # --- 3. 기간 선택 슬라이더 ---
     all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
     min_d, max_d = all_dates[0], all_dates[-1]
 
     st.sidebar.subheader("📅 분석 기간 선택")
-    # 로드된 데이터 안에서 마우스로 조절하는 슬라이더
     user_date = st.sidebar.slider(
-        "분석 범위",
+        "분석 범위 조절",
         min_value=min_d,
         max_value=max_d,
         value=(min_d, max_d),
         format="YYYY-MM-DD"
     )
     start_date, end_date = user_date[0], user_date[1]
+
+    # [핵심 수정] 슬라이더 조절 시 선택된 실제 영업일 수 계산 및 표시
+    selected_range_df = pd.DataFrame(index=all_dates)
+    actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
+    
+    st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
 
     st.title("📈 주식 & 원자재 통합 분석 리포트")
     selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
@@ -113,15 +125,12 @@ if prices_dict:
                 base_p = df_sym['Close'].iloc[0]
                 norm_c, norm_h, norm_l = (df_sym['Close']/base_p-1)*100, (df_sym['High']/base_p-1)*100, (df_sym['Low']/base_p-1)*100
                 
-                # 변동폭 그림자
                 fig.add_trace(go.Scatter(x=list(norm_h.index)+list(norm_l.index)[::-1], y=list(norm_h.values)+list(norm_l.values)[::-1], 
                                          fill='toself', fillcolor=color, line=dict(color='rgba(0,0,0,0)'), opacity=0.15, 
                                          name=col, legendgroup=col, showlegend=False, hoverinfo='skip'), row=1, col=1)
-                # 종가 실선
                 fig.add_trace(go.Scatter(x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
                                          line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'), row=1, col=1)
                 
-                # 하락률(Drawdown)
                 dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
                 all_min_dd.append(float(dd.min()))
                 fig.add_trace(go.Scatter(x=dd.index, y=dd, name=col, legendgroup=col, showlegend=False, mode='lines', 
