@@ -25,11 +25,11 @@ def get_ticker(name, krx_df):
 
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
-load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 150)
+load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 730, 250)
 
 default_symbols = {
     'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
-    'Russell 2000': '^RUT', 'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
+    'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
     '금 (Gold)': 'GC=F', '은 (Silver)': 'SI=F', '구리 (Copper)': 'HG=F',
     'WTI 원유': 'CL=F', '철광석 (Iron Ore)': 'TIO=F'
 }
@@ -43,12 +43,12 @@ if added_stocks:
         name = s.strip()
         if name: symbols[name] = get_ticker(name, krx_df)
 
-# --- 2. 데이터 로드 및 정제 ---
+# --- 2. 데이터 로드 ---
 prices_dict = {}
-with st.spinner('데이터를 수집 및 정제 중입니다...'):
+with st.spinner('데이터를 수집 중...'):
     for name, sym in symbols.items():
         try:
-            df = yf.download(sym, period='2y', auto_adjust=True, progress=False)
+            df = yf.download(sym, period='3y', auto_adjust=True, progress=False)
             if not df.empty:
                 df = df.reset_index()
                 df['Date'] = pd.to_datetime(df['Date']).dt.date
@@ -62,141 +62,107 @@ with st.spinner('데이터를 수집 및 정제 중입니다...'):
 
 if prices_dict:
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index()
-    df_merged = df_merged.interpolate(method='linear', limit_direction='both')
-    df_merged = df_merged.tail(load_days)
+    df_merged = df_merged.interpolate(method='linear', limit_direction='both').tail(load_days)
     
-    # --- 3. 메인 화면 상단 구성 ---
-    st.title("📈 주식 & 원자재 수익률 및 하락률 분석")
+    # --- 3. 메인 화면 ---
+    st.title("📈 인터랙티브 구간 수익률 & 하락률 분석")
     
-    st.markdown("### 👁️ 분석 대상 선택")
-    selected_symbols = st.multiselect(
-        "그래프에 표시할 항목을 선택하세요",
-        options=list(df_merged.columns),
-        default=list(df_merged.columns)
-    )
+    selected_symbols = st.multiselect("분석 종목 선택", options=list(df_merged.columns), default=list(df_merged.columns)[:5])
     
-    st.sidebar.subheader("📅 분석 범위 (0% 리셋)")
+    # 날짜 범위 선택 (슬라이더)
     min_d, max_d = df_merged.index.min(), df_merged.index.max()
-    user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
+    user_date = st.slider("분석 구간 설정 (드래그하여 변경)", min_value=min_d, max_value=max_d, value=(min_d, max_d))
     
     start_date, end_date = user_date[0], user_date[1]
     
-    if not selected_symbols:
-        st.warning("항목을 선택해 주세요.")
-    else:
-        # 데이터 필터링
+    if selected_symbols:
+        # 데이터 필터링 및 계산
         filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
-        daily_rets = filtered_prices.pct_change()
         
-        st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {len(filtered_prices)} 영업일**)")
+        # ----------------------------
+        # 4. 차트 생성 (수익률 & Drawdown)
+        # ----------------------------
+        colors = px.colors.qualitative.Alphabet
         
-        # --- 4. 메인 그래프 (수익률 추이) ---
-        st.subheader("🚀 누적 수익률 (%)")
+        # [차트 1] 누적 수익률
         fig_main = go.Figure()
-        colors = px.colors.qualitative.Alphabet 
-
-        for i, col in enumerate(filtered_prices.columns):
-            color = colors[i % len(colors)]
+        for i, col in enumerate(selected_symbols):
             fig_main.add_trace(go.Scatter(
-                x=norm_df.index, y=norm_df[col],
-                name=col, legendgroup=col,
-                mode='lines', line=dict(width=2, color=color),
-                connectgaps=True, hovertemplate='%{x}<br>수익률: %{y:.2f}%'
+                x=norm_df.index, y=norm_df[col], name=col,
+                mode='lines', line=dict(width=2, color=colors[i % len(colors)]),
+                hovertemplate='%{x}<br>수익률: %{y:.2f}%'
             ))
-            
-            # 최고점 👑 표시
-            max_val = norm_df[col].max()
-            max_date = norm_df[col].idxmax()
-            fig_main.add_trace(go.Scatter(
-                x=[max_date], y=[max_val],
-                name=col, legendgroup=col, mode='markers',
-                marker=dict(size=10, symbol='star', color=color),
-                showlegend=False, hoverinfo='skip'
-            ))
-
-        fig_main.add_hline(y=0, line_dash="dash", line_color="black")
-        fig_main.update_layout(hovermode='x unified', template='plotly_white', height=500, margin=dict(t=10))
+        
+        fig_main.update_layout(
+            title=f"선택 기간 누적 수익률 (기준일: {start_date})",
+            hovermode='x unified', template='plotly_white', height=450,
+            xaxis=dict(rangeslider=dict(visible=False)) # 하단 슬라이더와 연동을 위해 꺼둠
+        )
         st.plotly_chart(fig_main, use_container_width=True)
 
-        # --- 5. [신규 추가] 드로우다운(Drawdown) 그래프 ---
-        st.subheader("📉 최고가 대비 하락률 (Drawdown %)")
+        # [차트 2] Drawdown
         fig_dd = go.Figure()
-
-        for i, col in enumerate(filtered_prices.columns):
-            color = colors[i % len(colors)]
-            # Drawdown 계산
+        for i, col in enumerate(selected_symbols):
             rolling_high = filtered_prices[col].cummax()
             drawdown = ((filtered_prices[col] / rolling_high) - 1) * 100
             
-            # 드로우다운 라인
             fig_dd.add_trace(go.Scatter(
-                x=drawdown.index, y=drawdown,
-                name=col, legendgroup=col,
-                mode='lines', line=dict(width=1.5, color=color),
-                fill='tozeroy', # 바닥까지 색 채우기 (선택 사항)
-                connectgaps=True, hovertemplate='%{x}<br>하락률: %{y:.2f}%'
+                x=drawdown.index, y=drawdown, name=col,
+                mode='lines', line=dict(width=1.5, color=colors[i % len(colors)]),
+                fill='tozeroy', hovertemplate='%{x}<br>하락률: %{y:.2f}%'
             ))
             
-            # 신고가(0%) 지점 다이아몬드 강조
-            is_high = drawdown.abs() < 1e-6
-            df_high = drawdown[is_high]
+            # 신고가 포인트
+            highs = drawdown[drawdown.abs() < 1e-6]
             fig_dd.add_trace(go.Scatter(
-                x=df_high.index, y=df_high,
-                mode='markers', legendgroup=col,
-                marker=dict(size=8, symbol='diamond', color=color, line=dict(width=1, color='white')),
+                x=highs.index, y=highs, mode='markers',
+                marker=dict(size=7, symbol='diamond', color=colors[i % len(colors)]),
                 showlegend=False, hoverinfo='skip'
             ))
 
-        fig_dd.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
         fig_dd.update_layout(
-            hovermode='x unified', template='plotly_white', height=400,
-            yaxis=dict(title="하락률 (%)", range=[drawdown.min() * 1.2, 1]),
-            margin=dict(t=10)
+            title="선택 기간 최고가 대비 하락률 (Drawdown)",
+            hovermode='x unified', template='plotly_white', height=350,
+            yaxis=dict(title="하락률 (%)")
         )
         st.plotly_chart(fig_dd, use_container_width=True)
 
+        # ----------------------------
+        # 5. 선택 영역 기반 실시간 통계 (표)
+        # ----------------------------
         st.divider()
-
-        # --- 6. 하단 분석 리포트 ---
-        col_left, col_right = st.columns([1, 1])
-
-        with col_left:
-            st.subheader("항목 간 상관관계")
-            if len(selected_symbols) > 1:
-                corr_matrix = daily_rets.dropna(how='all').corr()
-                fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
-                st.plotly_chart(fig_corr, use_container_width=True)
-
-        with col_right:
-            st.subheader("📊 성과 요약")
-            summary_data = []
-            num_days = len(daily_rets.dropna(how='all'))
+        st.subheader(f"📍 {start_date} ~ {end_date} 구간 상세 통계")
+        
+        num_days = len(filtered_prices)
+        summary_list = []
+        
+        for col in selected_symbols:
+            curr_p = filtered_prices[col]
+            period_return = ((curr_p.iloc[-1] / curr_p.iloc[0]) - 1) * 100
             
-            for col in filtered_prices.columns:
-                summary_data.append({
-                    '항목': col,
-                    '현재수익률 (%)': norm_df[col].iloc[-1],
-                    '최고수익률 (%)': norm_df[col].max(),
-                    '일평균 변동성 (%)': daily_rets[col].std() * 100,
-                    '선택기간 변동률 (%)': daily_rets[col].std() * np.sqrt(num_days) * 100
-                })
+            rolling_max = curr_p.cummax()
+            dd = ((curr_p / rolling_max) - 1) * 100
+            period_mdd = dd.min()
             
-            sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
+            summary_list.append({
+                '종목': col,
+                '구간 수익률 (%)': period_return,
+                '구간 최대 낙폭 (MDD %)': period_mdd,
+                '시작 가격': curr_p.iloc[0],
+                '종료 가격': curr_p.iloc[-1]
+            })
             
-            def highlight_status(row):
-                curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
-                is_max = abs(curr - max_r) < 1e-9
-                is_near = (max_r - curr) <= 5.0
-                return ['color: red; font-weight: bold' if is_max and val == curr else 
-                        'color: blue; font-weight: bold' if is_near and val == curr else '' for val in row]
+        stat_df = pd.DataFrame(summary_list).sort_values('구간 수익률 (%)', ascending=False)
+        
+        st.table(stat_df.style.format({
+            '구간 수익률 (%)': '{:.2f}',
+            '구간 최대 낙폭 (MDD %)': '{:.2f}',
+            '시작 가격': '{:,.2f}',
+            '종료 가격': '{:,.2f}'
+        }))
 
-            st.dataframe(
-                sum_df.style.apply(highlight_status, axis=1).format({
-                    '현재수익률 (%)': '{:.2f}', '최고수익률 (%)': '{:.2f}',
-                    '일평균 변동성 (%)': '{:.2f}', '선택기간 변동률 (%)': '{:.2f}'
-                }), hide_index=True, use_container_width=True
-            )
-            st.info("💡 **색상 안내**: **빨간색**은 신고가, **파란색**은 고점 대비 5% 이내 근접 항목입니다.")
+        st.info("💡 **팁**: 차트 위의 슬라이더를 드래그하거나 확대하면 해당 날짜 구간에 대한 수익률과 하락률이 자동으로 재계산되어 아래 표에 표시됩니다.")
+
 else:
-    st.error("데이터 수집에 실패했습니다.")
+    st.error("데이터 로드 실패")
