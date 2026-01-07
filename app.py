@@ -34,8 +34,8 @@ if added_stocks:
         name = s.strip()
         if name: symbols[name] = get_ticker(name, krx_df)
 
-# 2. 데이터 불러오기
-all_data = []
+# 2. 데이터 불러오기 및 수익률 통합
+prices_dict = {}
 with st.spinner('데이터를 분석 중입니다...'):
     for name, sym in symbols.items():
         try:
@@ -43,76 +43,69 @@ with st.spinner('데이터를 분석 중입니다...'):
             if not df.empty:
                 df = df.reset_index()
                 close_col = 'Close' if 'Close' in df.columns else df.columns[1]
-                tmp = pd.DataFrame({
+                # 날짜와 종가만 추출하여 저장
+                temp_df = pd.DataFrame({
                     'Date': pd.to_datetime(df['Date']),
-                    'Price': df[close_col].iloc[:,0] if isinstance(df[close_col], pd.DataFrame) else df[close_col],
-                    'Symbol': name
-                }).dropna()
-                all_data.append(tmp.tail(load_days))
+                    name: df[close_col].iloc[:,0] if isinstance(df[close_col], pd.DataFrame) else df[close_col]
+                }).set_index('Date')
+                prices_dict[name] = temp_df
         except: continue
 
-if all_data:
-    df_main = pd.concat(all_data).reset_index(drop=True)
+if prices_dict:
+    # 모든 데이터를 날짜 기준으로 하나로 합침 (중요: 여기서 날짜가 정렬됨)
+    df_merged = pd.concat(prices_dict.values(), axis=1).sort_index().tail(load_days)
     
     # 3. 사이드바 날짜 슬라이더
     st.sidebar.subheader("📅 분석 범위 설정 (0% 리셋)")
-    min_d = df_main['Date'].min().to_pydatetime()
-    max_d = df_main['Date'].max().to_pydatetime()
+    min_d = df_merged.index.min().to_pydatetime()
+    max_d = df_merged.index.max().to_pydatetime()
     user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
 
-    # 4. 데이터 필터링 및 재계산
+    # 4. 데이터 필터링
     start_date, end_date = pd.to_datetime(user_date[0]), pd.to_datetime(user_date[1])
-    filtered = df_main[(df_main['Date'] >= start_date) & (df_main['Date'] <= end_date)].copy()
+    filtered_prices = df_merged.loc[start_date:end_date].copy()
 
-    if not filtered.empty:
-        norm_data = []
-        summary = []
-        corr_dict = {} # 상관관계 계산용
+    if not filtered_prices.empty:
+        actual_business_days = len(filtered_prices)
         
-        sample_sym = filtered['Symbol'].unique()[0]
-        actual_business_days = len(filtered[filtered['Symbol'] == sample_sym])
-
-        for sym in filtered['Symbol'].unique():
-            target = filtered[filtered['Symbol'] == sym].sort_values('Date').copy()
-            if not target.empty:
-                # 수익률 재계산
-                base_price = target['Price'].iloc[0]
-                target['수익률 (%)'] = ((target['Price'] / base_price) - 1) * 100
-                norm_data.append(target)
-                
-                # 지표 및 상관계수용 일일 수익률 계산
-                rets = target['Price'].pct_change()
-                corr_dict[sym] = rets
-                
-                summary.append({
-                    '종목': sym,
-                    '수익률 (%)': target['수익률 (%)'].iloc[-1],
-                    '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100,
-                    '일평균변동폭 (%)': rets.abs().mean() * 100
-                })
+        # 수익률 및 지표 계산
+        norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
+        daily_rets = filtered_prices.pct_change()
+        
+        summary = []
+        for col in filtered_prices.columns:
+            rets = daily_rets[col].dropna()
+            summary.append({
+                '종목': col,
+                '수익률 (%)': norm_df[col].iloc[-1],
+                '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100,
+                '일평균변동폭 (%)': rets.abs().mean() * 100
+            })
 
         # 5. 화면 출력
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        # 레이아웃 분할 (그래프와 상관계수 히트맵)
         col1, col2 = st.columns([3, 2])
 
         with col1:
             st.subheader("수익률 추이")
-            final_df = pd.concat(norm_data)
-            fig = px.line(final_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
+            # 그래프용 데이터 변환
+            plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
+            fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol', markers=True)
             fig.add_hline(y=0, line_dash="dash", line_color="black")
             fig.update_layout(hovermode='x unified', template='plotly_white', height=500)
             st.plotly_chart(fig, use_container_width=True)
 
         with col2:
             st.subheader("종목 간 상관관계")
-            corr_df = pd.DataFrame(corr_dict).corr()
-            fig_corr = px.imshow(corr_df, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
+            # [수정] 깨끗한 수익률 데이터로 상관계수 계산
+            corr_matrix = daily_rets.corr()
+            fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
             fig_corr.update_layout(height=500)
             st.plotly_chart(fig_corr, use_container_width=True)
 
-        # 요약표
         st.subheader(f"📊 {actual_business_days}영업일간의 성과 요약")
         st.table(pd.DataFrame(summary).sort_values('수익률 (%)', ascending=False).style.format(precision=2))
+else:
+    st.error("데이터 수집에 실패했습니다.")
