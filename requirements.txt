@@ -1,6 +1,6 @@
 streamlit
-yfinance
+yfinance>=0.2.40
 finance-datareader
-pandas
+pandas>=2.0.0
 plotly
 numpy
