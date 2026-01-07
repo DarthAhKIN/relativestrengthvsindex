@@ -22,19 +22,23 @@ def get_ticker(name, krx_df):
         return f"{code}.KS" if market == 'KOSPI' else f"{code}.KQ"
     return name
 
-# 1. 설정 및 데이터 로드 (4대 지수 복구)
+# 1. 설정 및 데이터 로드
 st.sidebar.header("🔍 기본 설정")
 load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 120)
 
-# 원래 기본 설정대로 4대 지수 복구
+# 기본 지수 설정: 미 4대 지수 + 한 2대 지수 (KOSPI, KOSDAQ)
 default_symbols = {
     'S&P 500': '^GSPC', 
     'Nasdaq 100': '^NDX', 
     'Dow Jones': '^DJI', 
-    'Russell 2000': '^RUT'
+    'Russell 2000': '^RUT',
+    'KOSPI': '^KS11',
+    'KOSDAQ': '^KQ11'
 }
+
 krx_df = get_krx_list()
-added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "TSLA, NVDA, 삼성전자")
+# 삼성전자, TSLA, NVDA를 기본 입력에서 제거 (빈 칸으로 두거나 안내 메시지)
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/티커)", "", placeholder="예: 삼성전자, TSLA, NVDA")
 
 symbols = default_symbols.copy()
 if added_stocks:
@@ -59,21 +63,22 @@ with st.spinner('데이터를 정제 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 데이터 통합 (모든 종목의 날짜 합집합)
+    # 모든 날짜 통합 및 결측치 보간 (선 끊김 및 상관관계 오류 방지)
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index()
-    
-    # [핵심] 결측치 처리: 앞뒤 값으로 채워 상관관계 및 그래프 끊김 해결
     df_merged = df_merged.ffill().bfill() 
     df_merged = df_merged.tail(load_days)
     
     st.title("📈 주식 수익률 & 상관계수 분석")
     st.markdown("### 👁️ 분석할 종목 선택")
+    
+    # 메인 상단 선택창
     selected_symbols = st.multiselect(
         "그래프에 표시할 종목을 선택하세요",
         options=list(df_merged.columns),
         default=list(df_merged.columns)
     )
     
+    # 사이드바 날짜 슬라이더
     st.sidebar.subheader("📅 분석 범위 (0% 리셋)")
     min_d = df_merged.index.min()
     max_d = df_merged.index.max()
@@ -82,16 +87,15 @@ if prices_dict:
     start_date, end_date = user_date[0], user_date[1]
     
     if not selected_symbols:
-        st.warning("종목을 선택해주세요.")
+        st.warning("표시할 종목을 선택해주세요.")
     else:
         filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
-        actual_business_days = len(filtered_prices)
         
-        # 수익률 및 지표 계산
+        # 수익률 계산 (첫 날 기준 0%)
         norm_df = (filtered_prices / filtered_prices.iloc[0] - 1) * 100
         daily_rets = filtered_prices.pct_change()
         
-        st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {actual_business_days} 영업일**)")
+        st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {len(filtered_prices)} 영업일**)")
         
         fig = go.Figure()
         colors = px.colors.qualitative.Plotly
@@ -100,6 +104,7 @@ if prices_dict:
             color = colors[i % len(colors)]
             y_values = norm_df[col]
             
+            # 메인 라인
             fig.add_trace(go.Scatter(
                 x=norm_df.index, y=y_values,
                 name=col, legendgroup=col,
@@ -107,6 +112,7 @@ if prices_dict:
                 connectgaps=True
             ))
             
+            # 최고점 👑 표시
             max_yield, max_date = y_values.max(), y_values.idxmax()
             fig.add_trace(go.Scatter(
                 x=[max_date], y=[max_yield],
@@ -119,7 +125,7 @@ if prices_dict:
 
         fig.add_hline(y=0, line_dash="dash", line_color="black")
         
-        # 휴장일(주말 등) 처리로 가로 끊김 제거
+        # 휴장일 처리
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
         fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
         st.plotly_chart(fig, use_container_width=True)
@@ -130,12 +136,12 @@ if prices_dict:
         with col_left:
             st.subheader("종목 간 상관관계")
             if len(selected_symbols) > 1:
-                # 결측치 없이 정제된 데이터로 상관관계 계산
+                # 깨끗한 데이터로 상관계수 산출
                 corr_matrix = daily_rets.dropna(how='all').corr()
                 fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
                 st.plotly_chart(fig_corr, use_container_width=True)
             else:
-                st.info("2개 이상의 종목을 선택하세요.")
+                st.info("상관관계 분석을 위해 2개 이상의 종목을 선택하세요.")
 
         with col_right:
             st.subheader("📊 성과 요약")
@@ -148,3 +154,8 @@ if prices_dict:
                     '기간변동성 (%)': daily_rets[col].std() * np.sqrt(252) * 100
                 })
             st.dataframe(pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False), hide_index=True, use_container_width=True)
+            
+            csv = pd.DataFrame(summary_data).to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📊 분석 결과 CSV 저장", csv, "stock_analysis.csv", "text/csv")
+else:
+    st.error("데이터 로드에 실패했습니다. 사이드바 설정을 확인해주세요.")
