@@ -27,19 +27,11 @@ def get_ticker(name, krx_df):
 st.sidebar.header("🔍 기본 설정")
 load_days = st.sidebar.slider("데이터 로드 범위 (최대 영업일)", 30, 500, 150)
 
-# 기본 인덱스 설정 (지수 6종 + 원자재 5종)
 default_symbols = {
-    'S&P 500': '^GSPC', 
-    'Nasdaq 100': '^NDX', 
-    'Dow Jones': '^DJI', 
-    'Russell 2000': '^RUT',
-    'KOSPI': '^KS11',
-    'KOSDAQ': '^KQ11',
-    '금 (Gold)': 'GC=F',
-    '은 (Silver)': 'SI=F',
-    '구리 (Copper)': 'HG=F',
-    'WTI 원유': 'CL=F',
-    '철광석 (Iron Ore)': 'TIO=F'
+    'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
+    'Russell 2000': '^RUT', 'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
+    '금 (Gold)': 'GC=F', '은 (Silver)': 'SI=F', '구리 (Copper)': 'HG=F',
+    'WTI 원유': 'CL=F', '철광석 (Iron Ore)': 'TIO=F'
 }
 
 krx_df = get_krx_list()
@@ -69,13 +61,12 @@ with st.spinner('데이터를 수집 및 정제 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 모든 날짜 통합 및 휴장일 선형 보간 (국가별 휴장일 차이 및 끊김 해결)
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index()
     df_merged = df_merged.interpolate(method='linear', limit_direction='both')
     df_merged = df_merged.tail(load_days)
     
     # --- 3. 메인 화면 상단 구성 ---
-    st.title("📈 주식 & 원자재 수익률 및 변동성 분석")
+    st.title("📈 주식 & 원자재 수익률 및 하락률 분석")
     
     st.markdown("### 👁️ 분석 대상 선택")
     selected_symbols = st.multiselect(
@@ -84,7 +75,6 @@ if prices_dict:
         default=list(df_merged.columns)
     )
     
-    # 사이드바 날짜 슬라이더
     st.sidebar.subheader("📅 분석 범위 (0% 리셋)")
     min_d, max_d = df_merged.index.min(), df_merged.index.max()
     user_date = st.sidebar.slider("기간 선택", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
@@ -92,7 +82,7 @@ if prices_dict:
     start_date, end_date = user_date[0], user_date[1]
     
     if not selected_symbols:
-        st.warning("상단 선택창에서 분석할 종목을 선택해 주세요.")
+        st.warning("항목을 선택해 주세요.")
     else:
         # 데이터 필터링
         filtered_prices = df_merged.loc[start_date:end_date, selected_symbols].copy()
@@ -101,72 +91,82 @@ if prices_dict:
         
         st.success(f"✅ **분석 범위:** {start_date} ~ {end_date} (**총 {len(filtered_prices)} 영업일**)")
         
-        # --- 4. 메인 그래프 (Plotly) ---
-        fig = go.Figure()
+        # --- 4. 메인 그래프 (수익률 추이) ---
+        st.subheader("🚀 누적 수익률 (%)")
+        fig_main = go.Figure()
         colors = px.colors.qualitative.Alphabet 
 
         for i, col in enumerate(filtered_prices.columns):
             color = colors[i % len(colors)]
-            y_values = norm_df[col]
-            
-            # 메인 라인
-            fig.add_trace(go.Scatter(
-                x=norm_df.index, y=y_values,
+            fig_main.add_trace(go.Scatter(
+                x=norm_df.index, y=norm_df[col],
                 name=col, legendgroup=col,
-                mode='lines', 
-                line=dict(width=2.5, color=color),
-                connectgaps=True,
-                hovertemplate='%{x}<br>수익률: %{y:.2f}%'
+                mode='lines', line=dict(width=2, color=color),
+                connectgaps=True, hovertemplate='%{x}<br>수익률: %{y:.2f}%'
             ))
             
             # 최고점 👑 표시
-            max_yield = y_values.max()
-            max_date = y_values.idxmax()
-            fig.add_trace(go.Scatter(
-                x=[max_date], y=[max_yield],
-                name=col, legendgroup=col,
-                mode='markers+text', 
-                text=[f"👑 {col}"],
-                textposition="top center",
-                marker=dict(size=10, symbol='star', color=color, line=dict(width=1, color='black')),
-                showlegend=False,
-                hoverinfo='skip'
+            max_val = norm_df[col].max()
+            max_date = norm_df[col].idxmax()
+            fig_main.add_trace(go.Scatter(
+                x=[max_date], y=[max_val],
+                name=col, legendgroup=col, mode='markers',
+                marker=dict(size=10, symbol='star', color=color),
+                showlegend=False, hoverinfo='skip'
             ))
 
-        fig.add_hline(y=0, line_dash="dash", line_color="black")
-        
-        # X축 최적화 (주말 제거 및 격자 설정)
-        fig.update_xaxes(
-            rangebreaks=[dict(bounds=["sat", "mon"])],
-            showgrid=True, gridwidth=1, gridcolor='LightGrey'
+        fig_main.add_hline(y=0, line_dash="dash", line_color="black")
+        fig_main.update_layout(hovermode='x unified', template='plotly_white', height=500, margin=dict(t=10))
+        st.plotly_chart(fig_main, use_container_width=True)
+
+        # --- 5. [신규 추가] 드로우다운(Drawdown) 그래프 ---
+        st.subheader("📉 최고가 대비 하락률 (Drawdown %)")
+        fig_dd = go.Figure()
+
+        for i, col in enumerate(filtered_prices.columns):
+            color = colors[i % len(colors)]
+            # Drawdown 계산
+            rolling_high = filtered_prices[col].cummax()
+            drawdown = ((filtered_prices[col] / rolling_high) - 1) * 100
+            
+            # 드로우다운 라인
+            fig_dd.add_trace(go.Scatter(
+                x=drawdown.index, y=drawdown,
+                name=col, legendgroup=col,
+                mode='lines', line=dict(width=1.5, color=color),
+                fill='tozeroy', # 바닥까지 색 채우기 (선택 사항)
+                connectgaps=True, hovertemplate='%{x}<br>하락률: %{y:.2f}%'
+            ))
+            
+            # 신고가(0%) 지점 다이아몬드 강조
+            is_high = drawdown.abs() < 1e-6
+            df_high = drawdown[is_high]
+            fig_dd.add_trace(go.Scatter(
+                x=df_high.index, y=df_high,
+                mode='markers', legendgroup=col,
+                marker=dict(size=8, symbol='diamond', color=color, line=dict(width=1, color='white')),
+                showlegend=False, hoverinfo='skip'
+            ))
+
+        fig_dd.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
+        fig_dd.update_layout(
+            hovermode='x unified', template='plotly_white', height=400,
+            yaxis=dict(title="하락률 (%)", range=[drawdown.min() * 1.2, 1]),
+            margin=dict(t=10)
         )
-        
-        fig.update_layout(
-            hovermode='x unified', 
-            template='plotly_white', 
-            height=650,
-            legend=dict(itemclick="toggle", itemdoubleclick="toggleothers")
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_dd, use_container_width=True)
 
         st.divider()
 
-        # --- 5. 하단 분석 리포트 ---
+        # --- 6. 하단 분석 리포트 ---
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
             st.subheader("항목 간 상관관계")
             if len(selected_symbols) > 1:
                 corr_matrix = daily_rets.dropna(how='all').corr()
-                fig_corr = px.imshow(
-                    corr_matrix, 
-                    text_auto=".2f", 
-                    color_continuous_scale='RdBu_r', 
-                    range_color=[-1, 1]
-                )
+                fig_corr = px.imshow(corr_matrix, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
                 st.plotly_chart(fig_corr, use_container_width=True)
-            else:
-                st.info("상관관계 분석을 위해 2개 이상의 종목을 선택하세요.")
 
         with col_right:
             st.subheader("📊 성과 요약")
@@ -174,57 +174,29 @@ if prices_dict:
             num_days = len(daily_rets.dropna(how='all'))
             
             for col in filtered_prices.columns:
-                d_vol = daily_rets[col].std() * 100
-                period_vol = daily_rets[col].std() * np.sqrt(num_days) * 100
-                
-                curr_ret = norm_df[col].iloc[-1]
-                max_ret = norm_df[col].max()
-                
                 summary_data.append({
                     '항목': col,
-                    '현재수익률 (%)': curr_ret,
-                    '최고수익률 (%)': max_ret,
-                    '일평균 변동성 (%)': d_vol,
-                    '선택기간 변동률 (%)': period_vol
+                    '현재수익률 (%)': norm_df[col].iloc[-1],
+                    '최고수익률 (%)': norm_df[col].max(),
+                    '일평균 변동성 (%)': daily_rets[col].std() * 100,
+                    '선택기간 변동률 (%)': daily_rets[col].std() * np.sqrt(num_days) * 100
                 })
             
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
-            # [조건부 서식] 신고가는 빨간색, 5% 이내 근접은 파란색
             def highlight_status(row):
-                curr = row['현재수익률 (%)']
-                max_r = row['최고수익률 (%)']
-                
-                is_max = abs(curr - max_r) < 1e-9 # 신고가 확인
-                is_near = (max_r - curr) <= 5.0 # 5% 이내 근접 확인
-                
-                styles = []
-                for val in row:
-                    if val == curr:
-                        if is_max:
-                            styles.append('color: red; font-weight: bold')
-                        elif is_near:
-                            styles.append('color: blue; font-weight: bold')
-                        else:
-                            styles.append('')
-                    else:
-                        styles.append('')
-                return styles
+                curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
+                is_max = abs(curr - max_r) < 1e-9
+                is_near = (max_r - curr) <= 5.0
+                return ['color: red; font-weight: bold' if is_max and val == curr else 
+                        'color: blue; font-weight: bold' if is_near and val == curr else '' for val in row]
 
             st.dataframe(
                 sum_df.style.apply(highlight_status, axis=1).format({
-                    '현재수익률 (%)': '{:.2f}',
-                    '최고수익률 (%)': '{:.2f}',
-                    '일평균 변동성 (%)': '{:.2f}',
-                    '선택기간 변동률 (%)': '{:.2f}'
-                }), 
-                hide_index=True, 
-                use_container_width=True
+                    '현재수익률 (%)': '{:.2f}', '최고수익률 (%)': '{:.2f}',
+                    '일평균 변동성 (%)': '{:.2f}', '선택기간 변동률 (%)': '{:.2f}'
+                }), hide_index=True, use_container_width=True
             )
-            
-            csv = sum_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📊 분석 결과 CSV 저장", csv, "market_summary.csv", "text/csv")
-            st.info("💡 **색상 안내**: **빨간색**은 신고가(최고점), **파란색**은 최고점 대비 5% 이내 근접 항목입니다.")
-
+            st.info("💡 **색상 안내**: **빨간색**은 신고가, **파란색**은 고점 대비 5% 이내 근접 항목입니다.")
 else:
-    st.error("데이터 수집에 실패했습니다. 사이드바 설정을 확인해 주세요.")
+    st.error("데이터 수집에 실패했습니다.")
