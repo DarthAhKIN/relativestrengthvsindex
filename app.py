@@ -69,7 +69,7 @@ with st.spinner('데이터를 수집 및 정제 중입니다...'):
         except: continue
 
 if prices_dict:
-    # 모든 날짜 통합 및 휴장일 선형 보간 (국가별 휴장일 차이 해결)
+    # 모든 날짜 통합 및 휴장일 선형 보간 (국가별 휴장일 차이 및 끊김 해결)
     df_merged = pd.concat(prices_dict.values(), axis=1).sort_index()
     df_merged = df_merged.interpolate(method='linear', limit_direction='both')
     df_merged = df_merged.tail(load_days)
@@ -174,7 +174,6 @@ if prices_dict:
             num_days = len(daily_rets.dropna(how='all'))
             
             for col in filtered_prices.columns:
-                # 변동성 지표 계산
                 d_vol = daily_rets[col].std() * 100
                 period_vol = daily_rets[col].std() * np.sqrt(num_days) * 100
                 
@@ -191,14 +190,29 @@ if prices_dict:
             
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
-            # 조건부 서식: 현재수익률이 최고수익률과 같으면 빨간색 강조
-            def highlight_max(row):
-                # 부동소수점 오차 방지를 위해 차이가 매우 작으면 동일한 것으로 간주
-                is_max = abs(row['현재수익률 (%)'] - row['최고수익률 (%)']) < 1e-9
-                return ['color: red; font-weight: bold' if is_max and val == row['현재수익률 (%)'] else '' for val in row]
+            # [조건부 서식] 신고가는 빨간색, 5% 이내 근접은 파란색
+            def highlight_status(row):
+                curr = row['현재수익률 (%)']
+                max_r = row['최고수익률 (%)']
+                
+                is_max = abs(curr - max_r) < 1e-9 # 신고가 확인
+                is_near = (max_r - curr) <= 5.0 # 5% 이내 근접 확인
+                
+                styles = []
+                for val in row:
+                    if val == curr:
+                        if is_max:
+                            styles.append('color: red; font-weight: bold')
+                        elif is_near:
+                            styles.append('color: blue; font-weight: bold')
+                        else:
+                            styles.append('')
+                    else:
+                        styles.append('')
+                return styles
 
             st.dataframe(
-                sum_df.style.apply(highlight_max, axis=1).format({
+                sum_df.style.apply(highlight_status, axis=1).format({
                     '현재수익률 (%)': '{:.2f}',
                     '최고수익률 (%)': '{:.2f}',
                     '일평균 변동성 (%)': '{:.2f}',
@@ -210,7 +224,7 @@ if prices_dict:
             
             csv = sum_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button("📊 분석 결과 CSV 저장", csv, "market_summary.csv", "text/csv")
-            st.info(f"💡 **참고**: 현재수익률이 선택 기간 중 고점일 경우 **빨간색**으로 표시됩니다.")
+            st.info("💡 **색상 안내**: **빨간색**은 신고가(최고점), **파란색**은 최고점 대비 5% 이내 근접 항목입니다.")
 
 else:
     st.error("데이터 수집에 실패했습니다. 사이드바 설정을 확인해 주세요.")
