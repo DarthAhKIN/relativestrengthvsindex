@@ -119,22 +119,26 @@ if prices_dict:
         fig_main.update_layout(hovermode='x unified', template='plotly_white', height=500, margin=dict(t=10))
         st.plotly_chart(fig_main, use_container_width=True)
 
-        # --- 5. [신규 추가] 드로우다운(Drawdown) 그래프 ---
+        # --- 5. 드로우다운(Drawdown) 그래프 (범위 수정 버전) ---
         st.subheader("📉 최고가 대비 하락률 (Drawdown %)")
         fig_dd = go.Figure()
+
+        # 모든 종목의 하락폭 중 최솟값을 추적하기 위한 리스트
+        all_min_dd = []
 
         for i, col in enumerate(filtered_prices.columns):
             color = colors[i % len(colors)]
             # Drawdown 계산
             rolling_high = filtered_prices[col].cummax()
             drawdown = ((filtered_prices[col] / rolling_high) - 1) * 100
+            all_min_dd.append(drawdown.min()) # 각 종목의 최대 하락폭 저장
             
             # 드로우다운 라인
             fig_dd.add_trace(go.Scatter(
                 x=drawdown.index, y=drawdown,
                 name=col, legendgroup=col,
                 mode='lines', line=dict(width=1.5, color=color),
-                fill='tozeroy', # 바닥까지 색 채우기 (선택 사항)
+                fill='tozeroy', 
                 connectgaps=True, hovertemplate='%{x}<br>하락률: %{y:.2f}%'
             ))
             
@@ -148,10 +152,21 @@ if prices_dict:
                 showlegend=False, hoverinfo='skip'
             ))
 
+        # Y축 범위를 데이터에 맞게 동적으로 설정 (최소 하락폭의 1.1배 혹은 최소 -10% 확보)
+        min_y_limit = min(all_min_dd) if all_min_dd else -10
+        # 만약 하락폭이 거의 없다면(-1% 이내), 그래프가 너무 평평해지지 않게 최소 범위를 -5%로 설정
+        y_range_bottom = min(min_y_limit * 1.1, -5.0)
+
         fig_dd.add_hline(y=0, line_dash="dash", line_color="black", opacity=0.5)
         fig_dd.update_layout(
-            hovermode='x unified', template='plotly_white', height=400,
-            yaxis=dict(title="하락률 (%)", range=[drawdown.min() * 1.2, 1]),
+            hovermode='x unified', 
+            template='plotly_white', 
+            height=400,
+            yaxis=dict(
+                title="하락률 (%)", 
+                range=[y_range_bottom, 2], # 고점 0%가 잘 보이고 하단은 유동적으로
+                autorange=False
+            ),
             margin=dict(t=10)
         )
         st.plotly_chart(fig_dd, use_container_width=True)
@@ -199,4 +214,4 @@ if prices_dict:
             )
             st.info("💡 **색상 안내**: **빨간색**은 신고가, **파란색**은 고점 대비 5% 이내 근접 항목입니다.")
 else:
-    st.error("데이터 수집에 실패했습니다.")
+    st.error("데이터 수집에 실패했습니다. 사이드바 설정을 확인해 주세요.")
