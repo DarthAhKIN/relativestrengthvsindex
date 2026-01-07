@@ -150,4 +150,8 @@ if prices_dict:
 
         with col_right:
             st.subheader(f"📊 성과 요약")
-            st.dataframe(sum_df.style.format(precision=2), hide_index=
+            st.dataframe(sum_df.style.format(precision=2), hide_index=True, use_container_width=True)
+            st.info("💡 **팁**: 오른쪽 범례에서 종목을 클릭하면 그래프와 최고점 표시를 켜고 끌 수 있습니다.")
+
+else:
+    st.error("데이터를 수집하지 못했습니다.")
