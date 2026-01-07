@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.express as px
 import FinanceDataReader as fdr
 import numpy as np
+import plotly.graph_objects as go
 
 st.set_page_config(page_title="주식 수익률 & 상관계수 분석기", layout="wide")
 
@@ -69,60 +70,67 @@ if prices_dict:
         daily_rets = filtered_prices.pct_change()
         
         summary_data = []
-        high_points = [] # 최고점 저장을 위한 리스트
+        
+        # --- 그래프 생성 (Plotly Graph Objects 사용으로 정교화) ---
+        fig = go.Figure()
+        
+        # 색상 팔레트 준비
+        colors = px.colors.qualitative.Plotly
 
-        for col in filtered_prices.columns:
+        for i, col in enumerate(filtered_prices.columns):
             rets = daily_rets[col].dropna()
-            # 최고 수익률 지점 찾기
-            max_yield = norm_df[col].max()
-            max_date = norm_df[col].idxmax()
-            high_points.append({'Date': max_date, '수익률 (%)': max_yield, 'Symbol': col})
+            color = colors[i % len(colors)]
+            
+            # 수익률 데이터
+            y_values = norm_df[col]
+            x_values = norm_df.index
+            
+            # 1. 메인 라인 그래프 추가
+            fig.add_trace(go.Scatter(
+                x=x_values, y=y_values,
+                name=col, mode='lines',
+                line=dict(width=2, color=color),
+                hovertemplate='%{x}<br>%{y:.2f}%'
+            ))
+            
+            # 2. 최고점 데이터 추가 (범례 연동을 위해 같은 name 사용)
+            max_yield = y_values.max()
+            max_date = y_values.idxmax()
+            
+            fig.add_trace(go.Scatter(
+                x=[max_date], y=[max_yield],
+                name=col, mode='markers+text',
+                text=[f"👑 {col}"],
+                textposition="top center",
+                marker=dict(size=12, symbol='star', color=color, line=dict(width=1, color='black')),
+                showlegend=False, # 범례에 중복 표시 방지
+                hovertemplate=f"최고치: {max_yield:.2f}%"
+            ))
 
             summary_data.append({
                 '종목': col,
                 '최고수익률 (%)': max_yield,
-                '현재수익률 (%)': norm_df[col].iloc[-1],
+                '현재수익률 (%)': y_values.iloc[-1],
                 '기간변동성 (%)': rets.std() * np.sqrt(len(rets)) * 100
             })
         
         sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
-        high_df = pd.DataFrame(high_points)
 
         # --- 화면 레이아웃 구성 ---
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        # [상단] 수익률 그래프
-        st.subheader("수익률 추이 및 종목별 최고점(👑)")
-        plot_df = norm_df.reset_index().melt(id_vars='Date', var_name='Symbol', value_name='수익률 (%)')
-        
-        fig = px.line(plot_df, x='Date', y='수익률 (%)', color='Symbol')
-        
-        # 최고가(최고수익률) 지점에 강조 점과 라벨 추가
-        for i, row in high_df.iterrows():
-            fig.add_annotation(
-                x=row['Date'], y=row['수익률 (%)'],
-                text=f"👑 {row['Symbol']}",
-                showarrow=True, arrowhead=1, ax=0, ay=-20,
-                font=dict(size=10, color="black"),
-                bgcolor="white", opacity=0.8
-            )
-            # 최고점 포인트 강조
-            fig.add_scatter(
-                x=[row['Date']], y=[row['수익률 (%)']],
-                mode='markers',
-                marker=dict(size=10, symbol='star', line=dict(width=1, color='black')),
-                name=f"{row['Symbol']} 최고점",
-                showlegend=False
-            )
-
+        st.subheader("수익률 추이 및 종목별 최고점 (범례 클릭 시 함께 숨겨짐)")
         fig.add_hline(y=0, line_dash="dash", line_color="black")
-        fig.update_layout(hovermode='x unified', template='plotly_white', height=600)
+        fig.update_layout(
+            hovermode='x unified', template='plotly_white', height=600,
+            xaxis=dict(title="날짜"), yaxis=dict(title="수익률 (%)")
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
 
-        # [하단] 2열 배치
+        # 하단 2열 배치 (상관계수 및 요약표)
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -142,8 +150,4 @@ if prices_dict:
 
         with col_right:
             st.subheader(f"📊 성과 요약")
-            st.dataframe(sum_df.style.format(precision=2), hide_index=True, use_container_width=True)
-            st.info("※ **👑 표시**: 선택한 기간 내 각 종목의 최고 수익률 지점")
-
-else:
-    st.error("데이터를 수집하지 못했습니다.")
+            st.dataframe(sum_df.style.format(precision=2), hide_index=
