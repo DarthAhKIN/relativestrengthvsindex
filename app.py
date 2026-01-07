@@ -70,40 +70,40 @@ if prices_dict:
         daily_rets = filtered_prices.pct_change()
         
         summary_data = []
-        
-        # --- 그래프 생성 (Plotly Graph Objects 사용으로 정교화) ---
         fig = go.Figure()
-        
-        # 색상 팔레트 준비
         colors = px.colors.qualitative.Plotly
 
         for i, col in enumerate(filtered_prices.columns):
             rets = daily_rets[col].dropna()
             color = colors[i % len(colors)]
-            
-            # 수익률 데이터
             y_values = norm_df[col]
-            x_values = norm_df.index
+            
+            # [핵심] legendgroup을 사용하여 선과 점을 하나로 묶음
+            group_name = col
             
             # 1. 메인 라인 그래프 추가
             fig.add_trace(go.Scatter(
-                x=x_values, y=y_values,
-                name=col, mode='lines',
+                x=norm_df.index, y=y_values,
+                name=col, 
+                legendgroup=group_name, # 그룹화 설정
+                mode='lines',
                 line=dict(width=2, color=color),
                 hovertemplate='%{x}<br>%{y:.2f}%'
             ))
             
-            # 2. 최고점 데이터 추가 (범례 연동을 위해 같은 name 사용)
+            # 2. 최고점 데이터 추가
             max_yield = y_values.max()
             max_date = y_values.idxmax()
             
             fig.add_trace(go.Scatter(
                 x=[max_date], y=[max_yield],
-                name=col, mode='markers+text',
+                name=col, 
+                legendgroup=group_name, # 선과 동일한 그룹으로 설정
+                mode='markers+text',
                 text=[f"👑 {col}"],
                 textposition="top center",
                 marker=dict(size=12, symbol='star', color=color, line=dict(width=1, color='black')),
-                showlegend=False, # 범례에 중복 표시 방지
+                showlegend=False, # 범례창에는 선(trace) 하나만 표시되도록 함
                 hovertemplate=f"최고치: {max_yield:.2f}%"
             ))
 
@@ -116,21 +116,19 @@ if prices_dict:
         
         sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
 
-        # --- 화면 레이아웃 구성 ---
         st.title("📈 주식 수익률 & 상관계수 분석")
         st.success(f"✅ **분석 범위:** {start_date.strftime('%Y-%m-%d')} ~ {end_date.strftime('%Y-%m-%d')} (**총 {actual_business_days} 영업일**)")
         
-        st.subheader("수익률 추이 및 종목별 최고점 (범례 클릭 시 함께 숨겨짐)")
+        st.subheader("수익률 추이 및 종목별 최고점")
         fig.add_hline(y=0, line_dash="dash", line_color="black")
         fig.update_layout(
             hovermode='x unified', template='plotly_white', height=600,
-            xaxis=dict(title="날짜"), yaxis=dict(title="수익률 (%)")
+            xaxis=dict(title="날짜"), yaxis=dict(title="수익률 (%)"),
+            legend=dict(groupclick="toggleitem") # 그룹 클릭 시 전체 토글 설정
         )
         st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
-
-        # 하단 2열 배치 (상관계수 및 요약표)
         col_left, col_right = st.columns([1, 1])
 
         with col_left:
@@ -141,17 +139,11 @@ if prices_dict:
             st.plotly_chart(fig_corr, use_container_width=True)
             
             csv = sum_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📊 분석 결과 CSV로 저장",
-                data=csv,
-                file_name=f'stock_analysis_{start_date.strftime("%Y%m%d")}.csv',
-                mime='text/csv',
-            )
+            st.download_button(label="📊 분석 결과 CSV 저장", data=csv, file_name=f'stock_analysis.csv', mime='text/csv')
 
         with col_right:
             st.subheader(f"📊 성과 요약")
             st.dataframe(sum_df.style.format(precision=2), hide_index=True, use_container_width=True)
-            st.info("💡 **팁**: 오른쪽 범례에서 종목을 클릭하면 그래프와 최고점 표시를 켜고 끌 수 있습니다.")
 
 else:
     st.error("데이터를 수집하지 못했습니다.")
