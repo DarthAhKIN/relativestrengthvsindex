@@ -12,23 +12,20 @@ st.set_page_config(page_title="주식 & 원자재 통합 분석기", layout="wid
 
 @st.cache_data
 def get_krx_list():
-    """한국거래소 종목 리스트 수집"""
     try: 
         return fdr.StockListing('KRX')[['Code', 'Name', 'Market']]
     except: 
         return pd.DataFrame()
 
 def get_ticker_info(input_val, krx_df):
-    """이름 또는 코드를 입력받아 (티커, 시장명) 반환"""
     if krx_df.empty: 
         return input_val, "N/A"
     
     target = input_val.strip()
-    
-    # 1. 이름으로 검색
+    # 1. 이름으로 검색 (부분 일치 허용하지 않고 정확히 일치 확인)
     row = krx_df[krx_df['Name'] == target]
     
-    # 2. 이름이 없으면 코드로 검색 (숫자 6자리 대응)
+    # 2. 이름이 없으면 코드로 검색
     if row.empty:
         row = krx_df[krx_df['Code'] == target]
     
@@ -38,36 +35,30 @@ def get_ticker_info(input_val, krx_df):
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
         return f"{code}{suffix}", market
     
-    # 3. 한국 리스트에 없으면 미국/글로벌 티커로 간주
     return target, "US/Global"
 
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
 
-# 기본 로드 범위를 60으로 설정
 if 'load_days' not in st.session_state:
     st.session_state.load_days = 60
 
 load_days_input = st.sidebar.number_input(
     "데이터 로드 범위 (최대 영업일)", 
-    min_value=30, 
-    max_value=1000, 
+    min_value=30, max_value=1000, 
     value=st.session_state.load_days, 
     step=10
 )
 
-# [복구] 원래의 기본 지수 및 원자재 리스트
 default_symbols = {
     'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
     'Russell 2000': '^RUT', 'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
-    '금 (Gold)': 'GC=F', '은 (Silver)': 'SI=F', '구리 (Copper)': 'HG=F',
-    'WTI 원유': 'CL=F', '철광석 (Iron Ore)': 'TIO=F'
+    '금 (Gold)': 'GC=F', 'WTI 원유': 'CL=F'
 }
 
 krx_df = get_krx_list()
-added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드)", "", placeholder="예: 삼성전자, 005930, TSLA")
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드)", "", placeholder="예: 삼성전자, 461590, TSLA")
 
-# 종목별 시장 정보를 관리할 딕셔너리
 market_info_dict = {name: "Index/Global" for name in default_symbols}
 symbols = default_symbols.copy()
 
@@ -94,17 +85,12 @@ with st.spinner('데이터를 수집 중입니다...'):
         except: continue
 
 if prices_dict:
-    # --- 3. 기간 선택 슬라이더 ---
     all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
     min_d, max_d = all_dates[0], all_dates[-1]
 
     st.sidebar.subheader("📅 분석 기간 선택")
     user_date = st.sidebar.slider("분석 범위 조절", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
     start_date, end_date = user_date[0], user_date[1]
-
-    selected_range_df = pd.DataFrame(index=all_dates)
-    actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
-    st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
 
     st.title("📈 주식 & 원자재 통합 분석 리포트")
     selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
@@ -113,7 +99,6 @@ if prices_dict:
         def filter_by_date(df, start, end):
             return df[(df.index >= start) & (df.index <= end)]
 
-        # --- 4. 통합 그래프 생성 ---
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, 
                             subplot_titles=("🚀 누적 수익률 (%) 및 당일 변동폭", "📉 최고가 대비 하락률 (Drawdown %)"), 
                             row_heights=[0.6, 0.4])
@@ -127,8 +112,10 @@ if prices_dict:
             df_sym = filter_by_date(prices_dict[col], start_date, end_date).copy()
             if df_sym.empty: continue
             
-            # 상관관계 계산용 리스트 추가
-            close_list.append(df_sym['Close'].rename(col))
+            # [에러 수정 지점] rename() 대신 속성 직접 부여 방식으로 변경
+            s_close = df_sym['Close'].copy()
+            s_close.name = str(col)  # 이름을 명시적으로 문자열로 변환하여 할당
+            close_list.append(s_close)
             
             base_p = df_sym['Close'].iloc[0]
             norm_c = (df_sym['Close'] / base_p - 1) * 100
@@ -160,13 +147,13 @@ if prices_dict:
         fig.update_yaxes(ticksuffix="%", range=[min(all_min_dd)*1.1 if all_min_dd else -10, 2], row=2, col=1)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 5. 하단 분석 리포트 (상관관계 + 성과 요약) ---
         st.divider()
         col_l, col_r = st.columns([1, 1])
 
         with col_l:
             st.subheader("🔗 항목 간 상관관계")
             if len(close_list) > 1:
+                # 데이터 병합 전 인덱스 통일
                 close_df = pd.concat(close_list, axis=1).interpolate(method='linear', limit_direction='both')
                 corr = close_df.pct_change().corr()
                 fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
@@ -180,26 +167,19 @@ if prices_dict:
             for s in selected_symbols:
                 df_s = filter_by_date(prices_dict[s], start_date, end_date)
                 if df_s.empty: continue
-                
                 rets = (df_s['Close'] / df_s['Close'].iloc[0] - 1) * 100
-                daily_rets = df_s['Close'].pct_change()
-                
                 summary_data.append({
                     '시장': market_info_dict.get(s, "US/Global"),
                     '항목': s,
                     '현재수익률 (%)': rets.iloc[-1],
                     '최고수익률 (%)': rets.max(),
-                    '일평균 변동성 (%)': daily_rets.std() * 100,
-                    '선택기간 변동률 (%)': daily_rets.std() * np.sqrt(len(df_s)) * 100
+                    '일평균 변동성 (%)': df_s['Close'].pct_change().std() * 100,
+                    '선택기간 변동률 (%)': df_s['Close'].pct_change().std() * np.sqrt(len(df_s)) * 100
                 })
-            
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
-            st.dataframe(
-                sum_df.style.format('{:.2f}', subset=['현재수익률 (%)', '최고수익률 (%)', '일평균 변동성 (%)', '선택기간 변동률 (%)']), 
-                hide_index=True, use_container_width=True
-            )
+            st.dataframe(sum_df.style.format('{:.2f}', subset=sum_df.columns[2:]), hide_index=True, use_container_width=True)
             
             csv = sum_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(label="📥 성과 요약 CSV 다운로드", data=csv, file_name=f"performance_{start_date}_{end_date}.csv", mime="text/csv")
+            st.download_button(label="📥 성과 요약 CSV 다운로드", data=csv, file_name=f"performance.csv", mime="text/csv")
 else:
     st.error("데이터 로드 실패")
