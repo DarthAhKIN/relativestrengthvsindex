@@ -20,18 +20,29 @@ def get_krx_list():
         return pd.DataFrame()
 
 def get_ticker_info(input_val, krx_df):
-    """이름 또는 코드를 입력받아 (티커, 시장명) 반환"""
+    """이름/코드/부분일치 검색을 통해 (티커, 시장명) 반환"""
     if krx_df.empty: 
         return input_val, "N/A"
     
     target = input_val.strip()
     
-    # 1. 이름으로 정확히 일치하는지 검색
-    row = krx_df[krx_df['Name'] == target]
+    # 1. [우선순위 1] 종목코드로 정확히 검색 (숫자 6자리)
+    row = krx_df[krx_df['Code'] == target]
     
-    # 2. 이름이 없으면 종목코드(숫자 6자리)로 검색
+    # 2. [우선순위 2] 이름이 정확히 일치하는지 검색
     if row.empty:
-        row = krx_df[krx_df['Code'] == target]
+        row = krx_df[krx_df['Name'] == target]
+        
+    # 3. [우선순위 3 - 핵심 수정] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
+    # 예: 'K방산'만 입력해도 'PLUS K방산레버리지'를 찾음
+    if row.empty:
+        try:
+            # case=False: 대소문자 무시
+            mask = krx_df['Name'].str.contains(target, case=False, regex=False)
+            if mask.any():
+                row = krx_df[mask].head(1) # 가장 먼저 잡히는 1개 선택
+        except:
+            pass
     
     if not row.empty:
         code = row.iloc[0]['Code']
@@ -40,7 +51,7 @@ def get_ticker_info(input_val, krx_df):
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
         return f"{code}{suffix}", market
     
-    # 3. 한국 리스트에 없으면 미국/글로벌 티커로 간주
+    # 4. 한국 리스트에 없으면 미국/글로벌 티커로 간주
     return target, "US/Global"
 
 # --- 1. 사이드바 설정 ---
@@ -67,7 +78,7 @@ default_symbols = {
 }
 
 krx_df = get_krx_list()
-added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드)", "", placeholder="예: 삼성전자, 461590, TSLA")
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드/부분명)", "", placeholder="예: 삼성전자, 461590, K방산")
 
 # 종목별 시장 정보를 관리할 딕셔너리
 market_info_dict = {name: "Index/Global" for name in default_symbols}
@@ -80,7 +91,7 @@ if added_stocks:
         symbols[item] = ticker
         market_info_dict[item] = market
 
-# --- 2. 데이터 로드 및 정제 (핵심 수정 구간) ---
+# --- 2. 데이터 로드 및 정제 ---
 prices_dict = {}
 with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
@@ -88,14 +99,14 @@ with st.spinner('데이터를 수집 중입니다...'):
             # 수정주가 반영
             df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
-                # [Fix 1] 다중 컬럼 인덱스 평탄화
+                # 다중 컬럼 인덱스 평탄화
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 
-                # [Fix 2] 중복된 컬럼명(Close 등)이 있다면 첫 번째만 유지
+                # 중복된 컬럼명 제거
                 df = df.loc[:, ~df.columns.duplicated()].copy()
                 
-                # [Fix 3] 중복된 날짜(Index) 제거
+                # 중복된 날짜 제거
                 df = df[~df.index.duplicated(keep='first')]
                 
                 # 기간 필터링
@@ -108,9 +119,9 @@ if prices_dict:
     # --- 3. 기간 선택 슬라이더 ---
     all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
     if not all_dates:
-        st.error("데이터가 없습니다.")
+        st.error("데이터 로드에 실패했습니다.")
         st.stop()
-        
+
     min_d, max_d = all_dates[0], all_dates[-1]
 
     st.sidebar.subheader("📅 분석 기간 선택")
@@ -143,23 +154,19 @@ if prices_dict:
             df_sym = filter_by_date(prices_dict[col], start_date, end_date).copy()
             if df_sym.empty: continue
             
-            # [Fix 4] 안전한 스칼라 값 추출 (Series -> float)
             try:
                 base_p = float(df_sym['Close'].iloc[0])
-            except:
-                continue # 데이터가 깨진 경우 건너뜀
+            except: continue
 
-            # 수익률 계산
             norm_c = (df_sym['Close'] / base_p - 1) * 100
             norm_h = (df_sym['High'] / base_p - 1) * 100
             norm_l = (df_sym['Low'] / base_p - 1) * 100
             
-            # 상관관계 분석용 데이터 수집
             s_close = df_sym['Close'].copy()
-            s_close.name = str(col) # [Fix 5] rename 대신 name 속성 직접 변경
+            s_close.name = str(col)
             close_list.append(s_close)
             
-            # 1. 고가-저가 범위 (음영)
+            # 음영(고가-저가)
             fig.add_trace(go.Scatter(
                 x=list(norm_h.index) + list(norm_l.index)[::-1], 
                 y=list(norm_h.values) + list(norm_l.values)[::-1], 
@@ -167,13 +174,13 @@ if prices_dict:
                 opacity=0.15, name=col, legendgroup=col, showlegend=False, hoverinfo='skip'
             ), row=1, col=1)
             
-            # 2. 종가 수익률 (선)
+            # 라인(종가)
             fig.add_trace(go.Scatter(
                 x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
                 line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'
             ), row=1, col=1)
             
-            # 3. MDD (하단 그래프)
+            # MDD
             dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
             all_min_dd.append(float(dd.min()))
             fig.add_trace(go.Scatter(
@@ -194,7 +201,6 @@ if prices_dict:
         with col_l:
             st.subheader("🔗 항목 간 상관관계")
             if len(close_list) > 1:
-                # 데이터 병합 및 상관관계 계산
                 close_df = pd.concat(close_list, axis=1).interpolate(method='linear', limit_direction='both')
                 corr = close_df.pct_change().corr()
                 fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
@@ -209,7 +215,6 @@ if prices_dict:
                 df_s = filter_by_date(prices_dict[s], start_date, end_date)
                 if df_s.empty: continue
                 
-                # [Fix 6] 요약표 계산 시에도 안전한 float 변환 사용
                 base_val = float(df_s['Close'].iloc[0])
                 rets = (df_s['Close'] / base_val - 1) * 100
                 
@@ -224,10 +229,9 @@ if prices_dict:
             
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
-            # 스타일링: 전고점(최고수익률) 근처 강조
             def highlight_status(row):
                 curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
-                is_near = (max_r - curr) <= 5.0 # 전고점 대비 -5% 이내
+                is_near = (max_r - curr) <= 5.0
                 styles = ['' for _ in row]
                 idx = sum_df.columns.get_loc('현재수익률 (%)')
                 if is_near: 
