@@ -20,26 +20,19 @@ def get_krx_list():
 def get_ticker_info(input_val, krx_df):
     if krx_df.empty: 
         return input_val, "N/A"
-    
     target = input_val.strip()
-    # 1. 이름으로 검색 (부분 일치 허용하지 않고 정확히 일치 확인)
     row = krx_df[krx_df['Name'] == target]
-    
-    # 2. 이름이 없으면 코드로 검색
     if row.empty:
         row = krx_df[krx_df['Code'] == target]
-    
     if not row.empty:
         code = row.iloc[0]['Code']
         market = row.iloc[0]['Market']
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
         return f"{code}{suffix}", market
-    
     return target, "US/Global"
 
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
-
 if 'load_days' not in st.session_state:
     st.session_state.load_days = 60
 
@@ -69,15 +62,19 @@ if added_stocks:
         symbols[item] = ticker
         market_info_dict[item] = market
 
-# --- 2. 데이터 로드 ---
+# --- 2. 데이터 로드 및 정제 ---
 prices_dict = {}
 with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
         try:
             df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
+                # 다중 인덱스 제거
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
+                
+                # [핵심 수정] 중복된 날짜 제거 (에러 방지용)
+                df = df[~df.index.duplicated(keep='first')]
                 
                 df = df.tail(load_days_input)
                 df.index = pd.to_datetime(df.index).date
@@ -112,15 +109,18 @@ if prices_dict:
             df_sym = filter_by_date(prices_dict[col], start_date, end_date).copy()
             if df_sym.empty: continue
             
-            # [에러 수정 지점] rename() 대신 속성 직접 부여 방식으로 변경
-            s_close = df_sym['Close'].copy()
-            s_close.name = str(col)  # 이름을 명시적으로 문자열로 변환하여 할당
-            close_list.append(s_close)
+            # 정규화 계산 (base_p를 스칼라로 확실히 변환)
+            base_p = float(df_sym['Close'].iloc[0])
             
-            base_p = df_sym['Close'].iloc[0]
+            # 수익률 계산 시 인덱스 동기화 에러 방지
             norm_c = (df_sym['Close'] / base_p - 1) * 100
             norm_h = (df_sym['High'] / base_p - 1) * 100
             norm_l = (df_sym['Low'] / base_p - 1) * 100
+            
+            # 상관관계용 데이터
+            s_close = df_sym['Close'].copy()
+            s_close.name = str(col)
+            close_list.append(s_close)
             
             fig.add_trace(go.Scatter(
                 x=list(norm_h.index) + list(norm_l.index)[::-1], 
@@ -149,17 +149,16 @@ if prices_dict:
 
         st.divider()
         col_l, col_r = st.columns([1, 1])
-
         with col_l:
             st.subheader("🔗 항목 간 상관관계")
             if len(close_list) > 1:
-                # 데이터 병합 전 인덱스 통일
+                # 중복 인덱스 제거 후 병합
                 close_df = pd.concat(close_list, axis=1).interpolate(method='linear', limit_direction='both')
                 corr = close_df.pct_change().corr()
                 fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
                 st.plotly_chart(fig_corr, use_container_width=True)
             else:
-                st.info("상관관계를 보려면 2개 이상의 종목을 선택하세요.")
+                st.info("2개 이상 종목을 선택하세요.")
 
         with col_r:
             st.subheader("📊 성과 요약")
@@ -167,7 +166,7 @@ if prices_dict:
             for s in selected_symbols:
                 df_s = filter_by_date(prices_dict[s], start_date, end_date)
                 if df_s.empty: continue
-                rets = (df_s['Close'] / df_s['Close'].iloc[0] - 1) * 100
+                rets = (df_s['Close'] / float(df_s['Close'].iloc[0]) - 1) * 100
                 summary_data.append({
                     '시장': market_info_dict.get(s, "US/Global"),
                     '항목': s,
@@ -178,8 +177,5 @@ if prices_dict:
                 })
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             st.dataframe(sum_df.style.format('{:.2f}', subset=sum_df.columns[2:]), hide_index=True, use_container_width=True)
-            
-            csv = sum_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(label="📥 성과 요약 CSV 다운로드", data=csv, file_name=f"performance.csv", mime="text/csv")
 else:
     st.error("데이터 로드 실패")
