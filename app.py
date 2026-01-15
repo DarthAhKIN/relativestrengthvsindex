@@ -33,18 +33,21 @@ def get_ticker_info(input_val, krx_df):
     if row.empty:
         row = krx_df[krx_df['Name'] == target]
         
-    # 3. [우선순위 3] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
+    # 3. [우선순위 3 - 핵심 수정] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
+    # 예: 'K방산'만 입력해도 'PLUS K방산레버리지'를 찾음
     if row.empty:
         try:
+            # case=False: 대소문자 무시
             mask = krx_df['Name'].str.contains(target, case=False, regex=False)
             if mask.any():
-                row = krx_df[mask].head(1)
+                row = krx_df[mask].head(1) # 가장 먼저 잡히는 1개 선택
         except:
             pass
     
     if not row.empty:
         code = row.iloc[0]['Code']
         market = row.iloc[0]['Market']
+        # 야후 파이낸스용 접미사 추가
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
         return f"{code}{suffix}", market
     
@@ -54,6 +57,7 @@ def get_ticker_info(input_val, krx_df):
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
 
+# 기본 로드 범위를 60일로 설정
 if 'load_days' not in st.session_state:
     st.session_state.load_days = 60
 
@@ -65,6 +69,7 @@ load_days_input = st.sidebar.number_input(
     step=10
 )
 
+# 기본 지수 및 주요 자산 리스트
 default_symbols = {
     'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
     'Russell 2000': '^RUT', 'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
@@ -75,6 +80,7 @@ default_symbols = {
 krx_df = get_krx_list()
 added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드/부분명)", "", placeholder="예: 삼성전자, 461590, K방산")
 
+# 종목별 시장 정보를 관리할 딕셔너리
 market_info_dict = {name: "Index/Global" for name in default_symbols}
 symbols = default_symbols.copy()
 
@@ -90,14 +96,20 @@ prices_dict = {}
 with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
         try:
+            # 수정주가 반영
             df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
+                # 다중 컬럼 인덱스 평탄화
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 
+                # 중복된 컬럼명 제거
                 df = df.loc[:, ~df.columns.duplicated()].copy()
+                
+                # 중복된 날짜 제거
                 df = df[~df.index.duplicated(keep='first')]
                 
+                # 기간 필터링
                 df = df.tail(load_days_input)
                 df.index = pd.to_datetime(df.index).date
                 prices_dict[name] = df
@@ -116,6 +128,7 @@ if prices_dict:
     user_date = st.sidebar.slider("분석 범위 조절", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
     start_date, end_date = user_date[0], user_date[1]
 
+    # 실제 표시되는 영업일 수 안내
     selected_range_df = pd.DataFrame(index=all_dates)
     actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
     st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
@@ -153,6 +166,7 @@ if prices_dict:
             s_close.name = str(col)
             close_list.append(s_close)
             
+            # 음영(고가-저가)
             fig.add_trace(go.Scatter(
                 x=list(norm_h.index) + list(norm_l.index)[::-1], 
                 y=list(norm_h.values) + list(norm_l.values)[::-1], 
@@ -160,11 +174,13 @@ if prices_dict:
                 opacity=0.15, name=col, legendgroup=col, showlegend=False, hoverinfo='skip'
             ), row=1, col=1)
             
+            # 라인(종가)
             fig.add_trace(go.Scatter(
                 x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
                 line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'
             ), row=1, col=1)
             
+            # MDD
             dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
             all_min_dd.append(float(dd.min()))
             fig.add_trace(go.Scatter(
@@ -213,22 +229,13 @@ if prices_dict:
             
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
-            # [수정된 하이라이트 함수]
             def highlight_status(row):
-                curr = row['현재수익률 (%)']
-                max_r = row['최고수익률 (%)']
-                diff = max_r - curr
-                
+                curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
+                is_near = (max_r - curr) <= 5.0
                 styles = ['' for _ in row]
                 idx = sum_df.columns.get_loc('현재수익률 (%)')
-                
-                # 1. 최고가(Drawdown 0)인 경우 -> 빨간색
-                if diff <= 0.01: 
+                if is_near: 
                     styles[idx] = 'color: red; font-weight: bold'
-                # 2. 최고가 대비 5% 이내인 경우 -> 파란색
-                elif diff <= 5.0:
-                    styles[idx] = 'color: blue; font-weight: bold'
-                    
                 return styles
 
             st.dataframe(
