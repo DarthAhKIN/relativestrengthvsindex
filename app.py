@@ -30,11 +30,11 @@ st.sidebar.header("🔍 기본 설정")
 
 # [핵심 수정] 세션 상태를 이용한 값 관리
 if 'load_days' not in st.session_state:
-    st.session_state.load_days = 250
+    st.session_state.load_days = 60
 
 load_days_input = st.sidebar.number_input(
     "데이터 로드 범위 (최대 영업일)", 
-    min_value=30, max_value=1000, 
+    min_value=3, max_value=1000, 
     value=st.session_state.load_days, 
     step=10,
     key="load_days_input"
