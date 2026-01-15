@@ -21,44 +21,70 @@ def get_krx_list():
 
 def get_ticker_info(input_val, krx_df):
     """
-    입력값으로 검색 후 (티커, 시장구분, 표시용이름) 3개 값을 반환
+    [개선된 검색 로직]
+    1. .KS, .KQ 등 접미사가 있어도 코드를 인식
+    2. 띄어쓰기가 달라도 이름을 인식 (예: KODEX은선물 -> KODEX 은선물)
     """
     if krx_df.empty: 
         return input_val, "N/A", input_val
     
+    # 입력값 정리 (좌우 공백 제거)
     target = input_val.strip()
     
-    # 1. [우선순위 1] 종목코드로 정확히 검색 (숫자 6자리)
-    row = krx_df[krx_df['Code'] == target]
+    # [1단계] 코드로 검색 (접미사 제거 후 비교)
+    # 예: "144600.KS" -> "144600"으로 변환하여 검색
+    target_code = target.split('.')[0]  # 점(.) 뒤에 있는 건 날림
     
-    # 2. [우선순위 2] 이름이 정확히 일치하는지 검색
+    row = pd.DataFrame()
+    # 숫자로만 구성되어 있다면 코드 검색 시도
+    if target_code.isdigit():
+        row = krx_df[krx_df['Code'] == target_code]
+
+    # [2단계] 이름으로 검색 (기존 로직)
     if row.empty:
         row = krx_df[krx_df['Name'] == target]
         
-    # 3. [우선순위 3] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
+    # [3단계] 부분 일치 및 '공백 무시' 검색 (핵심 수정)
     if row.empty:
-        try:
-            mask = krx_df['Name'].str.contains(target, case=False, regex=False)
-            if mask.any():
-                row = krx_df[mask].head(1)
-        except:
-            pass
-    
+        # 3-1. 일반적인 포함 검색 (예: "삼성" -> "삼성전자")
+        mask = krx_df['Name'].str.contains(target, case=False, regex=False)
+        if mask.any():
+            row = krx_df[mask].head(1)
+        
+        # 3-2. 띄어쓰기 무시 검색 (예: "KODEX은선물" -> "KODEX 은선물")
+        if row.empty:
+            # 입력값에서 모든 공백 제거
+            target_nospace = target.replace(" ", "").upper()
+            
+            # 데이터프레임의 이름들도 공백을 제거하고 비교해야 함
+            # (속도를 위해 전체를 변환하기보다, 반복문으로 빠르게 찾음)
+            found_idx = None
+            for idx, name in zip(krx_df.index, krx_df['Name']):
+                if target_nospace in name.replace(" ", "").upper():
+                    found_idx = idx
+                    break
+            
+            if found_idx is not None:
+                row = krx_df.loc[[found_idx]]
+
+    # 검색 성공 시 데이터 반환
     if not row.empty:
         code = row.iloc[0]['Code']
         name = row.iloc[0]['Name']
         market = row.iloc[0]['Market']
         
-        # 야후 파이낸스용 티커 생성
+        # 야후 파이낸스용 접미사 결정
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
+        
+        # 실제 데이터 요청에 쓸 티커 (예: 144600.KS)
         yf_ticker = f"{code}{suffix}"
         
-        # [핵심 수정] 표시용 이름을 "종목명 (코드)" 형식으로 생성
+        # 화면에 보여줄 정식 명칭 (예: KODEX 은선물(H) (144600))
         display_name = f"{name} ({code})"
         
         return yf_ticker, market, display_name
     
-    # 4. 한국 리스트에 없으면 미국/글로벌 티커로 간주 -> 입력값 그대로 사용
+    # 4. 끝내 못 찾으면 해외 종목으로 간주
     return target, "US/Global", target
 
 # --- 1. 사이드바 설정 ---
@@ -84,7 +110,7 @@ default_symbols = {
 }
 
 krx_df = get_krx_list()
-added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드/부분명)", "", placeholder="예: 삼성전자, 461590, K방산")
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드/부분명)", "", placeholder="예: 삼성전자, 144600.KS, KODEX은선물")
 
 # 종목별 시장 정보를 관리할 딕셔너리
 market_info_dict = {name: "Index/Global" for name in default_symbols}
@@ -93,10 +119,10 @@ symbols = default_symbols.copy()
 if added_stocks:
     input_list = [s.strip() for s in added_stocks.split(',') if s.strip()]
     for item in input_list:
-        # [핵심] 여기서 display_name(정식명칭)을 받아옵니다.
+        # [핵심] 개선된 get_ticker_info 함수 호출
         ticker, market, display_name = get_ticker_info(item, krx_df)
         
-        # 딕셔너리의 키(Key)를 사용자가 입력한 값이 아니라 '정식 명칭'으로 저장
+        # 딕셔너리의 키(Key)를 '정식 명칭'으로 저장하여 UI 통일
         symbols[display_name] = ticker
         market_info_dict[display_name] = market
 
@@ -122,7 +148,7 @@ if prices_dict:
     # --- 3. 기간 선택 슬라이더 ---
     all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
     if not all_dates:
-        st.error("데이터 로드에 실패했습니다.")
+        st.error("데이터 로드에 실패했습니다. (검색된 종목의 데이터가 없거나 티커 오류일 수 있습니다)")
         st.stop()
 
     min_d, max_d = all_dates[0], all_dates[-1]
@@ -131,13 +157,12 @@ if prices_dict:
     user_date = st.sidebar.slider("분석 범위 조절", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
     start_date, end_date = user_date[0], user_date[1]
 
+    # 실제 표시되는 영업일 수 안내
     selected_range_df = pd.DataFrame(index=all_dates)
     actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
     st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
 
     st.title("📈 주식 & 원자재 통합 분석 리포트")
-    
-    # [참고] symbols 딕셔너리의 키가 이미 '정식 명칭'으로 바뀌었으므로, multiselect에도 정식 명칭이 뜹니다.
     selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
 
     if selected_symbols:
