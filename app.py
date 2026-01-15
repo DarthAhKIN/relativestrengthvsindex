@@ -1,173 +1,497 @@
 import streamlit as st
+
 import yfinance as yf
+
 import pandas as pd
-import FinanceDataReader as fdr
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+
 import plotly.express as px
 
+import FinanceDataReader as fdr
+
+import numpy as np
+
+import plotly.graph_objects as go
+
+from plotly.subplots import make_subplots
+
+
+
 # 0. 페이지 기본 설정
+
 st.set_page_config(page_title="주식 & 원자재 통합 분석기", layout="wide")
 
-# --- 데이터 로드 함수 (캐싱) ---
+
+
+# --- 캐싱된 데이터 로드 ---
+
 @st.cache_data
+
 def get_krx_list():
+
+    """한국거래소 종목 리스트 수집"""
+
     try: 
-        df = fdr.StockListing('KRX')
-        return df[['Code', 'Name', 'Market']]
+
+        return fdr.StockListing('KRX')[['Code', 'Name', 'Market']]
+
     except: 
+
         return pd.DataFrame()
 
+
+
 def get_ticker_info(input_val, krx_df):
-    """입력값(이름, 코드, 티커)을 분석하여 정식 정보 반환"""
-    if krx_df.empty: return input_val, "N/A", input_val
+
+    """이름/코드/부분일치 검색을 통해 (티커, 시장명) 반환"""
+
+    if krx_df.empty: 
+
+        return input_val, "N/A"
+
     
-    target = input_val.strip().replace(" ", "").upper()
-    target_code = target.split('.')[0] # .KS 등 접미사 제거
+
+    target = input_val.strip()
+
     
-    # 1. 코드로 검색
-    row = krx_df[krx_df['Code'] == target_code]
+
+    # 1. [우선순위 1] 종목코드로 정확히 검색 (숫자 6자리)
+
+    row = krx_df[krx_df['Code'] == target]
+
     
-    # 2. 이름으로 검색 (공백 무시)
+
+    # 2. [우선순위 2] 이름이 정확히 일치하는지 검색
+
     if row.empty:
-        temp_df = krx_df.copy()
-        temp_df['NameClean'] = temp_df['Name'].str.replace(" ", "").str.upper()
-        row = temp_df[temp_df['NameClean'].str.contains(target, na=False)].head(1)
+
+        row = krx_df[krx_df['Name'] == target]
+
         
-    if not row.empty:
-        code = row.iloc[0]['Code']
-        name = row.iloc[0]['Name']
-        market = row.iloc[0]['Market']
-        suffix = ".KS" if market == 'KOSPI' else ".KQ"
-        return f"{code}{suffix}", market, f"{name} ({code})"
+
+    # 3. [우선순위 3 - 핵심 수정] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
+
+    # 예: 'K방산'만 입력해도 'PLUS K방산레버리지'를 찾음
+
+    if row.empty:
+
+        try:
+
+            # case=False: 대소문자 무시
+
+            mask = krx_df['Name'].str.contains(target, case=False, regex=False)
+
+            if mask.any():
+
+                row = krx_df[mask].head(1) # 가장 먼저 잡히는 1개 선택
+
+        except:
+
+            pass
+
     
-    # 3. 해외 티커
-    return input_val, "Global", input_val
+
+    if not row.empty:
+
+        code = row.iloc[0]['Code']
+
+        market = row.iloc[0]['Market']
+
+        # 야후 파이낸스용 접미사 추가
+
+        suffix = ".KS" if market == 'KOSPI' else ".KQ"
+
+        return f"{code}{suffix}", market
+
+    
+
+    # 4. 한국 리스트에 없으면 미국/글로벌 티커로 간주
+
+    return target, "US/Global"
+
+
 
 # --- 1. 사이드바 설정 ---
-st.sidebar.header("🔍 기본 설정")
-load_days = st.sidebar.number_input("데이터 로드 범위 (영업일)", 30, 1000, 120, 10)
 
-# 기본 지수 및 자산
-default_assets = {
-    'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'KOSPI': '^KS11',
-    '금 (Gold)': 'GC=F', 'WTI 원유': 'CL=F'
+st.sidebar.header("🔍 기본 설정")
+
+
+
+# 기본 로드 범위를 60일로 설정
+
+if 'load_days' not in st.session_state:
+
+    st.session_state.load_days = 60
+
+
+
+load_days_input = st.sidebar.number_input(
+
+    "데이터 로드 범위 (최대 영업일)", 
+
+    min_value=30, 
+
+    max_value=1000, 
+
+    value=st.session_state.load_days, 
+
+    step=10
+
+)
+
+
+
+# 기본 지수 및 주요 자산 리스트
+
+default_symbols = {
+
+    'S&P 500': '^GSPC', 'Nasdaq 100': '^NDX', 'Dow Jones': '^DJI', 
+
+    'Russell 2000': '^RUT', 'KOSPI': '^KS11', 'KOSDAQ': '^KQ11',
+
+    '금 (Gold)': 'GC=F', '은 (Silver)': 'SI=F', '구리 (Copper)': 'HG=F',
+
+    'WTI 원유': 'CL=F', '철광석 (Iron Ore)': 'TIO=F'
+
 }
 
+
+
 krx_df = get_krx_list()
-added_input = st.sidebar.text_input("종목 추가 (예: 삼성전자, 144600, TSLA)", "")
 
-# 세션 상태로 종목 관리 (중복 방지 및 유지)
-if 'symbols' not in st.session_state:
-    st.session_state.symbols = default_assets.copy()
-    st.session_state.markets = {k: "Index/Global" for k in default_assets}
+added_stocks = st.sidebar.text_input("종목 추가 (한글명/코드/부분명)", "", placeholder="예: 삼성전자, 461590, K방산")
 
-if added_input:
-    ticker, market, display_name = get_ticker_info(added_input, krx_df)
-    st.session_state.symbols[display_name] = ticker
-    st.session_state.markets[display_name] = market
 
-# --- 2. 데이터 다운로드 ---
+
+# 종목별 시장 정보를 관리할 딕셔너리
+
+market_info_dict = {name: "Index/Global" for name in default_symbols}
+
+symbols = default_symbols.copy()
+
+
+
+if added_stocks:
+
+    input_list = [s.strip() for s in added_stocks.split(',') if s.strip()]
+
+    for item in input_list:
+
+        ticker, market = get_ticker_info(item, krx_df)
+
+        symbols[item] = ticker
+
+        market_info_dict[item] = market
+
+
+
+# --- 2. 데이터 로드 및 정제 ---
+
 prices_dict = {}
-with st.spinner('데이터 수집 중...'):
-    for name, sym in st.session_state.symbols.items():
+
+with st.spinner('데이터를 수집 중입니다...'):
+
+    for name, sym in symbols.items():
+
         try:
-            df = yf.download(sym, period='2y', auto_adjust=True, progress=False)
+
+            # 수정주가 반영
+
+            df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
+
             if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+
+                # 다중 컬럼 인덱스 평탄화
+
+                if isinstance(df.columns, pd.MultiIndex):
+
+                    df.columns = df.columns.get_level_values(0)
+
+                
+
+                # 중복된 컬럼명 제거
+
+                df = df.loc[:, ~df.columns.duplicated()].copy()
+
+                
+
+                # 중복된 날짜 제거
+
+                df = df[~df.index.duplicated(keep='first')]
+
+                
+
+                # 기간 필터링
+
+                df = df.tail(load_days_input)
+
                 df.index = pd.to_datetime(df.index).date
-                prices_dict[name] = df.tail(load_days)
+
+                prices_dict[name] = df
+
         except: continue
 
-if prices_dict:
-    st.title("📈 주식 & 원자재 통합 분석 리포트")
-    
-    # 분석 항목 선택
-    selected_names = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
 
-    if selected_names:
-        # --- 3. 통합 그래프 ---
+
+if prices_dict:
+
+    # --- 3. 기간 선택 슬라이더 ---
+
+    all_dates = sorted(list(set().union(*(d.index for d in prices_dict.values()))))
+
+    if not all_dates:
+
+        st.error("데이터 로드에 실패했습니다.")
+
+        st.stop()
+
+
+
+    min_d, max_d = all_dates[0], all_dates[-1]
+
+
+
+    st.sidebar.subheader("📅 분석 기간 선택")
+
+    user_date = st.sidebar.slider("분석 범위 조절", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
+
+    start_date, end_date = user_date[0], user_date[1]
+
+
+
+    # 실제 표시되는 영업일 수 안내
+
+    selected_range_df = pd.DataFrame(index=all_dates)
+
+    actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
+
+    st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
+
+
+
+    st.title("📈 주식 & 원자재 통합 분석 리포트")
+
+    selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
+
+
+
+    if selected_symbols:
+
+        def filter_by_date(df, start, end):
+
+            return df[(df.index >= start) & (df.index <= end)]
+
+
+
+        # --- 4. 통합 그래프 생성 ---
+
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, 
-                            subplot_titles=("🚀 누적 수익률 (%) 및 당일 변동폭", "📉 최고가 대비 하락률 (MDD %)"), 
+
+                            subplot_titles=("🚀 누적 수익률 (%) 및 당일 변동폭", "📉 최고가 대비 하락률 (Drawdown %)"), 
+
                             row_heights=[0.6, 0.4])
+
         
-        colors = px.colors.qualitative.Safe
-        summary_list = []
+
+        colors = px.colors.qualitative.Alphabet 
+
+        all_min_dd = []
+
         close_list = []
 
-        for i, name in enumerate(selected_names):
-            df = prices_dict[name]
+
+
+        for i, col in enumerate(selected_symbols):
+
             color = colors[i % len(colors)]
+
+            df_sym = filter_by_date(prices_dict[col], start_date, end_date).copy()
+
+            if df_sym.empty: continue
+
             
-            base_p = float(df['Close'].iloc[0])
-            norm_c = (df['Close'] / base_p - 1) * 100
-            norm_h = (df['High'] / base_p - 1) * 100
-            norm_l = (df['Low'] / base_p - 1) * 100
+
+            try:
+
+                base_p = float(df_sym['Close'].iloc[0])
+
+            except: continue
+
+
+
+            norm_c = (df_sym['Close'] / base_p - 1) * 100
+
+            norm_h = (df_sym['High'] / base_p - 1) * 100
+
+            norm_l = (df_sym['Low'] / base_p - 1) * 100
+
             
-            # (1) 음영 (변동폭) - legendgroup으로 선과 연결하여 동시 On/Off 가능
-            fig.add_trace(go.Scatter(
-                x=list(df.index) + list(df.index)[::-1], 
-                y=list(norm_h.values) + list(norm_l.values)[::-1], 
-                fill='toself', fillcolor=color, line=dict(color='rgba(0,0,0,0)'), 
-                opacity=0.15, name=name, legendgroup=name, showlegend=False, hoverinfo='skip'
-            ), row=1, col=1)
-            
-            # (2) 메인 수익률 선
-            fig.add_trace(go.Scatter(
-                x=df.index, y=norm_c, name=name, legendgroup=name, mode='lines', 
-                line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'
-            ), row=1, col=1)
-            
-            # (3) MDD 그래프
-            dd = (df['Close'] / df['Close'].cummax() - 1) * 100
-            fig.add_trace(go.Scatter(
-                x=dd.index, y=dd, name=name, legendgroup=name, showlegend=False, 
-                line=dict(width=1.5, color=color), fill='tozeroy', hovertemplate='%{y:.2f}%'
-            ), row=2, col=1)
-            
-            # 성과 데이터 요약
-            summary_list.append({
-                '시장': st.session_state.markets.get(name, "N/A"),
-                '이름': name,
-                '현재수익률 (%)': norm_c.iloc[-1],
-                '최고수익률 (%)': norm_c.max(),
-                '변동성 (%)': df['Close'].pct_change().std() * np.sqrt(252) * 100
-            })
-            
-            s_close = df['Close'].copy()
-            s_close.name = name
+
+            s_close = df_sym['Close'].copy()
+
+            s_close.name = str(col)
+
             close_list.append(s_close)
 
-        fig.update_layout(height=800, template='plotly_white', hovermode='x unified',
+            
+
+            # 음영(고가-저가)
+
+            fig.add_trace(go.Scatter(
+
+                x=list(norm_h.index) + list(norm_l.index)[::-1], 
+
+                y=list(norm_h.values) + list(norm_l.values)[::-1], 
+
+                fill='toself', fillcolor=color, line=dict(color='rgba(0,0,0,0)'), 
+
+                opacity=0.15, name=col, legendgroup=col, showlegend=False, hoverinfo='skip'
+
+            ), row=1, col=1)
+
+            
+
+            # 라인(종가)
+
+            fig.add_trace(go.Scatter(
+
+                x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
+
+                line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'
+
+            ), row=1, col=1)
+
+            
+
+            # MDD
+
+            dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
+
+            all_min_dd.append(float(dd.min()))
+
+            fig.add_trace(go.Scatter(
+
+                x=dd.index, y=dd, name=col, legendgroup=col, showlegend=False, mode='lines', 
+
+                line=dict(width=1.5, color=color), fill='tozeroy', hovertemplate='%{y:.2f}%'
+
+            ), row=2, col=1)
+
+
+
+        fig.update_layout(hovermode='x unified', template='plotly_white', height=800, 
+
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+
+        fig.update_yaxes(ticksuffix="%", row=1, col=1)
+
+        fig.update_yaxes(ticksuffix="%", range=[min(all_min_dd)*1.1 if all_min_dd else -10, 2], row=2, col=1)
+
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 4. 상관관계 및 성과요약표 ---
+
+
+        # --- 5. 하단 분석 리포트 ---
+
         st.divider()
-        col1, col2 = st.columns([1, 1.2])
 
-        with col1:
-            st.subheader("🔗 상관관계 분석")
+        col_l, col_r = st.columns([1, 1])
+
+
+
+        with col_l:
+
+            st.subheader("🔗 항목 간 상관관계")
+
             if len(close_list) > 1:
-                corr = pd.concat(close_list, axis=1).pct_change().corr()
-                st.plotly_chart(px.imshow(corr, text_auto=".2f", color_continuous_scale='RdBu_r'), use_container_width=True)
 
-        with col2:
+                close_df = pd.concat(close_list, axis=1).interpolate(method='linear', limit_direction='both')
+
+                corr = close_df.pct_change().corr()
+
+                fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale='RdBu_r', range_color=[-1, 1])
+
+                st.plotly_chart(fig_corr, use_container_width=True)
+
+            else:
+
+                st.info("상관관계를 보려면 2개 이상의 종목을 선택하세요.")
+
+
+
+        with col_r:
+
             st.subheader("📊 성과 요약")
-            sum_df = pd.DataFrame(summary_list).sort_values('현재수익률 (%)', ascending=False)
+
+            summary_data = []
+
+            for s in selected_symbols:
+
+                df_s = filter_by_date(prices_dict[s], start_date, end_date)
+
+                if df_s.empty: continue
+
+                
+
+                base_val = float(df_s['Close'].iloc[0])
+
+                rets = (df_s['Close'] / base_val - 1) * 100
+
+                
+
+                summary_data.append({
+
+                    '시장': market_info_dict.get(s, "US/Global"),
+
+                    '항목': s,
+
+                    '현재수익률 (%)': float(rets.iloc[-1]),
+
+                    '최고수익률 (%)': float(rets.max()),
+
+                    '일평균 변동성 (%)': float(df_s['Close'].pct_change().std() * 100),
+
+                    '선택기간 변동률 (%)': float(df_s['Close'].pct_change().std() * np.sqrt(len(df_s)) * 100)
+
+                })
+
             
+
+            sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
+
+            
+
             def highlight_status(row):
-                diff = row['최고수익률 (%)'] - row['현재수익률 (%)']
+
+                curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
+
+                is_near = (max_r - curr) <= 5.0
+
                 styles = ['' for _ in row]
+
                 idx = sum_df.columns.get_loc('현재수익률 (%)')
-                if diff < 0.01: styles[idx] = 'color: red; font-weight: bold'
-                elif diff <= 5.0: styles[idx] = 'color: blue; font-weight: bold'
+
+                if is_near: 
+
+                    styles[idx] = 'color: red; font-weight: bold'
+
                 return styles
 
+
+
             st.dataframe(
-                sum_df.style.apply(highlight_status, axis=1).format('{:.2f}', subset=['현재수익률 (%)', '최고수익률 (%)', '변동성 (%)']),
+
+                sum_df.style.apply(highlight_status, axis=1).format('{:.2f}', subset=['현재수익률 (%)', '최고수익률 (%)', '일평균 변동성 (%)', '선택기간 변동률 (%)']), 
+
                 hide_index=True, use_container_width=True
+
             )
+
+            
+
+            csv = sum_df.to_csv(index=False).encode('utf-8-sig')
+
+            st.download_button(label="📥 성과 요약 CSV 다운로드", data=csv, file_name=f"performance_{start_date}_{end_date}.csv", mime="text/csv")
+
 else:
-    st.info("데이터를 불러올 수 없습니다. 티커를 확인해 주세요.")
+
+    st.error("데이터 로드 실패 또는 데이터가 없습니다.") 
