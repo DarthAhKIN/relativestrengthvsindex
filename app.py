@@ -63,7 +63,7 @@ if 'load_days' not in st.session_state:
 
 load_days_input = st.sidebar.number_input(
     "데이터 로드 범위 (최대 영업일)", 
-    min_value=30, 
+    min_value=7, 
     max_value=1000, 
     value=st.session_state.load_days, 
     step=10
