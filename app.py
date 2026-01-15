@@ -20,9 +20,11 @@ def get_krx_list():
         return pd.DataFrame()
 
 def get_ticker_info(input_val, krx_df):
-    """이름/코드/부분일치 검색을 통해 (티커, 시장명) 반환"""
+    """
+    입력값으로 검색 후 (티커, 시장구분, 표시용이름) 3개 값을 반환
+    """
     if krx_df.empty: 
-        return input_val, "N/A"
+        return input_val, "N/A", input_val
     
     target = input_val.strip()
     
@@ -33,31 +35,35 @@ def get_ticker_info(input_val, krx_df):
     if row.empty:
         row = krx_df[krx_df['Name'] == target]
         
-    # 3. [우선순위 3 - 핵심 수정] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
-    # 예: 'K방산'만 입력해도 'PLUS K방산레버리지'를 찾음
+    # 3. [우선순위 3] 이름에 검색어가 '포함'되어 있는지 검색 (부분 일치)
     if row.empty:
         try:
-            # case=False: 대소문자 무시
             mask = krx_df['Name'].str.contains(target, case=False, regex=False)
             if mask.any():
-                row = krx_df[mask].head(1) # 가장 먼저 잡히는 1개 선택
+                row = krx_df[mask].head(1)
         except:
             pass
     
     if not row.empty:
         code = row.iloc[0]['Code']
+        name = row.iloc[0]['Name']
         market = row.iloc[0]['Market']
-        # 야후 파이낸스용 접미사 추가
+        
+        # 야후 파이낸스용 티커 생성
         suffix = ".KS" if market == 'KOSPI' else ".KQ"
-        return f"{code}{suffix}", market
+        yf_ticker = f"{code}{suffix}"
+        
+        # [핵심 수정] 표시용 이름을 "종목명 (코드)" 형식으로 생성
+        display_name = f"{name} ({code})"
+        
+        return yf_ticker, market, display_name
     
-    # 4. 한국 리스트에 없으면 미국/글로벌 티커로 간주
-    return target, "US/Global"
+    # 4. 한국 리스트에 없으면 미국/글로벌 티커로 간주 -> 입력값 그대로 사용
+    return target, "US/Global", target
 
 # --- 1. 사이드바 설정 ---
 st.sidebar.header("🔍 기본 설정")
 
-# 기본 로드 범위를 60일로 설정
 if 'load_days' not in st.session_state:
     st.session_state.load_days = 60
 
@@ -87,29 +93,26 @@ symbols = default_symbols.copy()
 if added_stocks:
     input_list = [s.strip() for s in added_stocks.split(',') if s.strip()]
     for item in input_list:
-        ticker, market = get_ticker_info(item, krx_df)
-        symbols[item] = ticker
-        market_info_dict[item] = market
+        # [핵심] 여기서 display_name(정식명칭)을 받아옵니다.
+        ticker, market, display_name = get_ticker_info(item, krx_df)
+        
+        # 딕셔너리의 키(Key)를 사용자가 입력한 값이 아니라 '정식 명칭'으로 저장
+        symbols[display_name] = ticker
+        market_info_dict[display_name] = market
 
 # --- 2. 데이터 로드 및 정제 ---
 prices_dict = {}
 with st.spinner('데이터를 수집 중입니다...'):
     for name, sym in symbols.items():
         try:
-            # 수정주가 반영
             df = yf.download(sym, period='5y', auto_adjust=True, progress=False)
             if not df.empty:
-                # 다중 컬럼 인덱스 평탄화
                 if isinstance(df.columns, pd.MultiIndex):
                     df.columns = df.columns.get_level_values(0)
                 
-                # 중복된 컬럼명 제거
                 df = df.loc[:, ~df.columns.duplicated()].copy()
-                
-                # 중복된 날짜 제거
                 df = df[~df.index.duplicated(keep='first')]
                 
-                # 기간 필터링
                 df = df.tail(load_days_input)
                 df.index = pd.to_datetime(df.index).date
                 prices_dict[name] = df
@@ -128,12 +131,13 @@ if prices_dict:
     user_date = st.sidebar.slider("분석 범위 조절", min_value=min_d, max_value=max_d, value=(min_d, max_d), format="YYYY-MM-DD")
     start_date, end_date = user_date[0], user_date[1]
 
-    # 실제 표시되는 영업일 수 안내
     selected_range_df = pd.DataFrame(index=all_dates)
     actual_days = len(selected_range_df[(selected_range_df.index >= start_date) & (selected_range_df.index <= end_date)])
     st.sidebar.info(f"현재 선택된 분석 기간은 **{actual_days}** 영업일입니다.")
 
     st.title("📈 주식 & 원자재 통합 분석 리포트")
+    
+    # [참고] symbols 딕셔너리의 키가 이미 '정식 명칭'으로 바뀌었으므로, multiselect에도 정식 명칭이 뜹니다.
     selected_symbols = st.multiselect("분석 항목 선택", options=list(prices_dict.keys()), default=list(prices_dict.keys())[:5])
 
     if selected_symbols:
@@ -166,7 +170,6 @@ if prices_dict:
             s_close.name = str(col)
             close_list.append(s_close)
             
-            # 음영(고가-저가)
             fig.add_trace(go.Scatter(
                 x=list(norm_h.index) + list(norm_l.index)[::-1], 
                 y=list(norm_h.values) + list(norm_l.values)[::-1], 
@@ -174,13 +177,11 @@ if prices_dict:
                 opacity=0.15, name=col, legendgroup=col, showlegend=False, hoverinfo='skip'
             ), row=1, col=1)
             
-            # 라인(종가)
             fig.add_trace(go.Scatter(
                 x=norm_c.index, y=norm_c, name=col, legendgroup=col, mode='lines', 
                 line=dict(width=2.5, color=color), hovertemplate='%{y:.2f}%'
             ), row=1, col=1)
             
-            # MDD
             dd = (df_sym['Close'] / df_sym['Close'].cummax() - 1) * 100
             all_min_dd.append(float(dd.min()))
             fig.add_trace(go.Scatter(
@@ -230,12 +231,18 @@ if prices_dict:
             sum_df = pd.DataFrame(summary_data).sort_values('현재수익률 (%)', ascending=False)
             
             def highlight_status(row):
-                curr, max_r = row['현재수익률 (%)'], row['최고수익률 (%)']
-                is_near = (max_r - curr) <= 5.0
+                curr = row['현재수익률 (%)']
+                max_r = row['최고수익률 (%)']
+                diff = max_r - curr
+                
                 styles = ['' for _ in row]
                 idx = sum_df.columns.get_loc('현재수익률 (%)')
-                if is_near: 
+                
+                if diff <= 0.01: 
                     styles[idx] = 'color: red; font-weight: bold'
+                elif diff <= 5.0:
+                    styles[idx] = 'color: blue; font-weight: bold'
+                    
                 return styles
 
             st.dataframe(
